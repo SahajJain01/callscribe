@@ -1,29 +1,72 @@
 {
   "manifest_version": 3,
-  "name": "CallScribe",
+  "name": "CallScribe: Meet & Slack Huddle Transcripts",
   "version": "0.1.0",
-  "description": "Saves Google Meet and Slack huddle captions as a transcript, plus an audio backup. Local only, no servers.",
-  "icons": { "16": "icons/16.png", "48": "icons/48.png", "128": "icons/128.png" },
-  "action": { "default_popup": "src/popup/popup.html", "default_icon": { "16": "icons/16.png", "48": "icons/48.png" } },
-  "permissions": ["storage", "unlimitedStorage", "downloads", "offscreen", "alarms"],
-  "host_permissions": ["https://meet.google.com/*", "https://app.slack.com/*"],
-  "background": { "service_worker": "src/background/index.js", "type": "module" },
+  "description": "Saves Google Meet and Slack huddle captions as a transcript with speaker names, plus an audio backup. Local only.",
+  "icons": {
+    "16": "icons/16.png",
+    "32": "icons/32.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "action": {
+    "default_popup": "src/popup/popup.html",
+    "default_icon": {
+      "16": "icons/16.png",
+      "32": "icons/32.png"
+    },
+    "default_title": "CallScribe"
+  },
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "downloads",
+    "offscreen",
+    "alarms"
+  ],
+  "host_permissions": [
+    "https://meet.google.com/*",
+    "https://app.slack.com/*"
+  ],
+  "background": {
+    "service_worker": "src/background/index.js",
+    "type": "module"
+  },
   "content_scripts": [
     {
-      "matches": ["https://meet.google.com/*", "https://app.slack.com/*"],
-      "js": ["src/page/audio-hook.js"],
+      "matches": [
+        "https://meet.google.com/*",
+        "https://app.slack.com/*"
+      ],
+      "js": [
+        "src/page/audio-hook.js"
+      ],
       "run_at": "document_start",
       "world": "MAIN"
     },
     {
-      "matches": ["https://meet.google.com/*"],
-      "js": ["src/shared/merge.js", "src/content/adapters/google-meet.js", "src/content/main.js"],
+      "matches": [
+        "https://meet.google.com/*"
+      ],
+      "js": [
+        "src/shared/merge.js",
+        "src/content/adapters/google-meet.js",
+        "src/content/main.js"
+      ],
       "run_at": "document_idle"
     },
     {
-      "matches": ["https://app.slack.com/*"],
-      "js": ["src/shared/merge.js", "src/content/adapters/slack-huddle.js", "src/content/main.js"],
+      "matches": [
+        "https://app.slack.com/*"
+      ],
+      "js": [
+        "src/shared/merge.js",
+        "src/content/adapters/slack-huddle.js",
+        "src/content/main.js"
+      ],
       "run_at": "document_idle"
     }
-  ]
+  ],
+  "short_name": "CallScribe",
+  "homepage_url": "https://github.com/SahajJain01/callscribe"
 }

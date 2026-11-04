@@ -1,0 +1,33 @@
+* { box-sizing: border-box; }
+body { margin: 0; font-family: "Inter", "Segoe UI", system-ui, sans-serif; color: #10203f; }
+.bg { width: 100vw; height: 100vh; background: linear-gradient(135deg, #eef3ff 0%, #dfe8ff 100%); display: flex; align-items: center; padding: 64px; gap: 56px; overflow: hidden; }
+.copy { flex: 0 0 430px; }
+.brand { display: flex; align-items: center; gap: 14px; font-weight: 700; font-size: 26px; margin-bottom: 30px; }
+.brand img { width: 52px; height: 52px; }
+h1 { font-size: 44px; line-height: 1.12; margin: 0 0 22px; letter-spacing: -0.02em; }
+p.lead { font-size: 20px; line-height: 1.5; color: #3a4a6b; margin: 0 0 26px; }
+ul.ticks { list-style: none; padding: 0; margin: 0; font-size: 18px; line-height: 1.9; color: #24345a; }
+ul.ticks li::before { content: "✓"; color: #2b5ce6; font-weight: 800; margin-right: 10px; }
+.stage { flex: 1; position: relative; height: 100%; }
+.card { background: #fff; border-radius: 14px; box-shadow: 0 18px 50px rgba(20, 40, 100, .18), 0 2px 6px rgba(20,40,100,.08); }
+.popup { position: absolute; width: 360px; padding-bottom: 8px; font-size: 13px; }
+.popup header { display: flex; align-items: center; gap: 8px; padding: 14px 16px 8px; font-weight: 700; font-size: 15px; }
+.popup header span { margin-left: auto; font-weight: 400; color: #888; font-size: 12px; }
+.pcard { margin: 0 16px 10px; padding: 10px 12px; border: 1px solid #e3e7ef; border-radius: 9px; }
+.live { display: flex; align-items: center; gap: 8px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: #d93025; }
+.muted { color: #7a8499; }
+.popup h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: #7a8499; margin: 12px 16px 6px; }
+.popup li { list-style: none; padding: 9px 16px; border-top: 1px solid #eef0f5; }
+.popup ul { margin: 0; padding: 0; }
+.t { font-weight: 600; }
+.btns { display: flex; gap: 6px; margin-top: 5px; }
+.btns b { font-weight: 400; font-size: 12px; padding: 3px 9px; border-radius: 6px; border: 1px solid #c9d1e3; }
+.doc { position: absolute; padding: 26px 30px; font-size: 15px; line-height: 1.55; }
+.doc h3 { margin: 0 0 8px; font-size: 22px; }
+.meta { color: #6b7590; font-size: 13.5px; margin-bottom: 14px; line-height: 1.6; }
+.turn { margin: 12px 0; }
+.who { font-weight: 700; }
+.ts { font-family: ui-monospace, monospace; font-size: 12px; color: #6b7590; background: #f1f4fa; padding: 1px 6px; border-radius: 5px; margin-left: 6px; }
+.file { display: flex; align-items: center; gap: 12px; padding: 12px 16px; font-size: 15px; }
+.file .ic { width: 46px; height: 40px; border-radius: 6px; display: grid; place-items: center; color: #fff; font-weight: 700; font-size: 11px; }
