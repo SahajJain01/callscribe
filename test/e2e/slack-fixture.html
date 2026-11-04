@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8" /><title>Fixture huddle</title></head>
+<body>
+<!-- Mimics the Slack web client's huddle markup (selectors from OpenClaw's slack-huddles plugin). -->
+<div data-qa="channel_name_button">design-team</div>
+<div id="huddle"></div>
+<script>
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const log = (m) => (window.__log = (window.__log || []).concat(m))
+
+async function remoteAudio() {
+  // Two peer connections on this page: "Them" sends a 440 Hz tone that we receive as a remote track.
+  const ctx = new AudioContext()
+  const osc = ctx.createOscillator(); osc.frequency.value = 440
+  const dst = ctx.createMediaStreamDestination(); osc.connect(dst); osc.start()
+  const a = new RTCPeerConnection(), b = new RTCPeerConnection()
+  a.onicecandidate = (e) => e.candidate && b.addIceCandidate(e.candidate)
+  b.onicecandidate = (e) => e.candidate && a.addIceCandidate(e.candidate)
+  b.ontrack = (e) => { const el = new Audio(); el.srcObject = e.streams[0] || new MediaStream([e.track]); el.play().catch(() => {}); log("remote track") }
+  dst.stream.getTracks().forEach((t) => a.addTrack(t, dst.stream))
+  await a.setLocalDescription(await a.createOffer()); await b.setRemoteDescription(a.localDescription)
+  await b.setLocalDescription(await b.createAnswer()); await a.setRemoteDescription(b.localDescription)
+}
+
+function caption(speaker, text, wrapper) {
+  const w = wrapper || document.createElement("div")
+  if (!wrapper) {
+    w.className = "p-huddle_closed_caption_event__wrapper"
+    w.innerHTML = `<span class="p-huddle_closed_caption_event__member_name"></span><div class="p-huddle_closed_caption_event__event_text"><span data-qa="huddle_closed_caption_event"></span></div>`
+    document.querySelector(".p-huddle_closed_captions").appendChild(w)
+  }
+  w.querySelector(".p-huddle_closed_caption_event__member_name").textContent = speaker
+  w.querySelector('[data-qa="huddle_closed_caption_event"]').textContent = text
+  return w
+}
+
+async function run() {
+  await navigator.mediaDevices.getUserMedia({ audio: true }) // fake mic (beep) via Chrome flags
+  await remoteAudio()
+  document.getElementById("huddle").innerHTML = `
+    <div data-qa="huddle_window_titlebar_title">Huddle in #design-team</div>
+    <div data-qa="huddle_toolbar_buttons_center"><button data-qa="huddle_toolbar__leave_button">Leave</button></div>
+    <div class="p-huddle_closed_captions"></div>`
+  log("joined")
+  await sleep(2500)
+  const r1 = caption("Alice Nguyen", "Morning everyone")
+  await sleep(600); caption("Alice Nguyen", "Morning everyone, let us look at", r1)
+  await sleep(600); caption("Alice Nguyen", "Morning everyone, let us look at the new landing page", r1)
+  await sleep(1200)
+  const r2 = caption("Sahaj Jain", "Sure, I pushed")
+  await sleep(600); caption("Sahaj Jain", "Sure, I pushed the hero changes last night", r2)
+  await sleep(1200)
+  // Slack trims old rows: the first one disappears.
+  r1.remove()
+  const r3 = caption("Alice Nguyen", "Great, ship it on Friday")
+  await sleep(5000)
+  document.getElementById("huddle").innerHTML = "" // leave the huddle
+  log("left")
+}
+run().catch((e) => log("fixture error " + e))
+</script>
+</body>
+</html>

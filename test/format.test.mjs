@@ -1,0 +1,37 @@
+import test from "node:test"
+import assert from "node:assert/strict"
+import { formatTranscript, fileBase, turns, clock } from "../src/shared/format.js"
+
+const start = new Date(2026, 10, 4, 16, 5, 0).getTime()
+
+test("clock", () => {
+  assert.equal(clock(3723000), "01:02:03")
+})
+
+test("file name is date, platform, title", () => {
+  assert.equal(fileBase({ startedAt: start, platformName: "Google Meet", title: "Weekly sync: Q3/Q4" }), "2026-11-04_1605_Google-Meet_Weekly-sync-Q3Q4")
+})
+
+test("consecutive lines by one speaker merge into a turn", () => {
+  const t = turns([
+    { speaker: "A", text: "one", start: 0, end: 1000 },
+    { speaker: "A", text: "two", start: 2000, end: 3000 },
+    { speaker: "B", text: "three", start: 3500, end: 4000 },
+  ])
+  assert.deepEqual(t.map((x) => [x.speaker, x.text]), [["A", "one two"], ["B", "three"]])
+})
+
+test("transcript markdown", () => {
+  const md = formatTranscript({
+    platformName: "Slack huddle",
+    title: "#design",
+    startedAt: start,
+    endedAt: start + 65000,
+    audio: { chunks: 3 },
+    utterances: [{ speaker: "Sahaj", text: "Hello", start: start + 5000, end: start + 6000 }],
+  })
+  assert.match(md, /^# #design/)
+  assert.match(md, /Duration: 00:01:05/)
+  assert.match(md, /Audio backup: 2026-11-04_1605_Slack-huddle_design\.webm/)
+  assert.match(md, /\*\*Sahaj\*\* `00:00:05`\nHello/)
+})
