@@ -12,7 +12,11 @@ When a call ends, two files land in `Downloads/CallScribe/`:
 2026-11-04_1823_Google-Meet_weekly-sync.webm   audio backup (Opus), same clock as the transcript
 ```
 
-## Install (unpacked)
+## Install
+
+Chrome Web Store: https://chromewebstore.google.com/detail/okggaiddahaifnjapedjahhgegbhabba (live once Google's review finishes).
+
+### Unpacked (development)
 
 1. `chrome://extensions` → turn on **Developer mode** (top right).
 2. **Load unpacked** → pick this folder (the one with `manifest.json`).
