@@ -47,6 +47,19 @@
       return ch ? `Huddle in ${ch}` : ""
     },
 
+    /** true = muted, false = live, undefined = can't tell */
+    selfMuted() {
+      const sw = document.querySelector('button[role="switch"][aria-label="Microphone"]')
+      if (sw && sw.getAttribute("aria-checked")) return sw.getAttribute("aria-checked") !== "true"
+      if (document.querySelector('[data-qa="huddle_mic_icon_mute"]')) return true
+      if (document.querySelector('[data-qa="huddle_mic_icon_unmute"]')) return false
+      const b = first(['[data-qa="huddle_sidebar_footer_mute_button"]', '[data-qa="segmented-mute-button-main"]'])
+      const label = b && (b.getAttribute("aria-label") || "")
+      if (/^unmute/i.test(label)) return true
+      if (/^mute/i.test(label)) return false
+      return undefined
+    },
+
     captionsOn() {
       return Boolean(first(SEL.captions))
     },

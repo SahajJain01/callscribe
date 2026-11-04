@@ -13,6 +13,17 @@
   let settings = { recordAudio: true, includeMic: true, autoCaptions: true }
   let session = null // { id, tracker, startedAt, lastInCall, captionsTried, savedAt }
   let readTimer = 0
+  let lastMuted
+
+  // Your mic is only recorded while the call app says you're unmuted.
+  function syncMute() {
+    if (!adapter.selfMuted) return
+    let muted
+    try { muted = adapter.selfMuted() } catch { return }
+    if (muted === undefined || muted === lastMuted) return
+    lastMuted = muted
+    toPage({ type: "mic", on: !muted })
+  }
 
   const send = (msg) => chrome.runtime.sendMessage(msg).catch(() => {})
   const toPage = (msg) => window.postMessage({ [TAG]: "ext", ...msg }, location.origin)
@@ -29,6 +40,8 @@
       type: "session-start",
       session: { id, platform: adapter.id, platformName: adapter.name, title: adapter.title(), url: location.href, startedAt: session.startedAt },
     })
+    lastMuted = undefined
+    syncMute()
     if (settings.recordAudio) toPage({ type: "start", id, includeMic: settings.includeMic })
     observe()
   }
@@ -116,12 +129,14 @@
     const inCall = adapter.inCall()
     if (inCall && !session) startSession()
     if (!session) return
-    if (inCall) session.lastInCall = Date.now()
-    else if (Date.now() - session.lastInCall > END_GRACE_MS) return endSession("left")
+    if (inCall) {
+      session.lastInCall = Date.now()
+      syncMute()
+    } else if (Date.now() - session.lastInCall > END_GRACE_MS) return endSession("left")
 
     if (settings.autoCaptions && adapter.enableCaptions && !adapter.captionsOn() && session.captionsTried < 3) {
       const since = Date.now() - session.startedAt
-      if (since > 3000 + session.captionsTried * 5000) {
+      if (since > 1000 + session.captionsTried * 5000) {
         session.captionsTried++
         adapter.enableCaptions()
       }

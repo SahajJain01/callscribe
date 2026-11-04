@@ -2,6 +2,8 @@
 <html>
 <head><meta charset="utf-8" /><title>Fixture huddle</title></head>
 <body>
+<!-- You stay muted (mic switch off) for the whole fixture, so any sound in the recording
+     must come from the remote WebRTC track. -->
 <!-- Mimics the Slack web client's huddle markup (selectors from OpenClaw's slack-huddles plugin). -->
 <div data-qa="channel_name_button">design-team</div>
 <div id="huddle"></div>
@@ -37,10 +39,13 @@ function caption(speaker, text, wrapper) {
 
 async function run() {
   await navigator.mediaDevices.getUserMedia({ audio: true }) // fake mic (beep) via Chrome flags
-  await remoteAudio()
+  if (!location.search.includes("noremote")) await remoteAudio()
   document.getElementById("huddle").innerHTML = `
     <div data-qa="huddle_window_titlebar_title">Huddle in #design-team</div>
-    <div data-qa="huddle_toolbar_buttons_center"><button data-qa="huddle_toolbar__leave_button">Leave</button></div>
+    <div data-qa="huddle_toolbar_buttons_center">
+      <button role="switch" aria-label="Microphone" aria-checked="false">Mic</button>
+      <button data-qa="huddle_toolbar__leave_button">Leave</button>
+    </div>
     <div class="p-huddle_closed_captions"></div>`
   log("joined")
   await sleep(2500)

@@ -37,6 +37,14 @@
       return code ? code[1] : ""
     },
 
+    /** true = muted, false = live, undefined = can't tell */
+    selfMuted() {
+      if (document.querySelector('button[aria-label^="Turn on microphone"]')) return true
+      if (document.querySelector('button[aria-label^="Turn off microphone"]')) return false
+      const b = document.querySelector("button[data-is-muted]")
+      return b ? b.getAttribute("data-is-muted") === "true" : undefined
+    },
+
     captionsOn() {
       return Boolean(captionRegion())
     },

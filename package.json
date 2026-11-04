@@ -6,6 +6,6 @@
   "license": "MIT",
   "scripts": {
     "test": "node --test test/",
-    "e2e": "node test/e2e/run.mjs"
+    "e2e": "node test/e2e/run.mjs && SCENARIO=muted-alone node test/e2e/run.mjs"
   }
 }

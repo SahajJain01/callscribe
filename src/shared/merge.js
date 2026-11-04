@@ -4,11 +4,21 @@
   "use strict"
 
   const norm = (s) => String(s || "").replace(/\s+/g, " ").trim()
+  const key = (w) => w.toLowerCase().replace(/[^\p{L}\p{N}']+/gu, "")
+  const words = (s) => norm(s).split(" ").filter(Boolean)
+
+  // How many of b's first n words line up with a starting at i (case/punctuation-insensitive).
+  function matchAt(a, i, b, n) {
+    let hits = 0
+    for (let j = 0; j < n; j++) if (i + j < a.length && a[i + j] === b[j]) hits++
+    return hits
+  }
 
   /**
-   * Merge the latest rendering of a caption row into what we already have for it.
-   * Caption UIs grow a row as speech arrives, rewrite recent words as recognition
-   * improves, and some trim the front of long rows. Keep the longest faithful text.
+   * Merge the latest rendering of a caption row into what we already hold for it.
+   * Caption UIs grow a row as speech arrives, re-punctuate and fix earlier words as
+   * recognition improves, and some trim the front of long rows. Find where the new
+   * rendering starts inside the old one (fuzzy, word-level) and splice it in there.
    */
   function mergeText(prev, next) {
     prev = norm(prev)
@@ -16,32 +26,41 @@
     if (!prev) return next
     if (!next || next === prev) return prev
 
-    // Same beginning: the row grew or recent words were refined. The newest rendering wins.
-    const head = Math.min(20, prev.length, next.length)
-    if (next.slice(0, head).toLowerCase() === prev.slice(0, head).toLowerCase()) return next
+    const pw = words(prev), nw = words(next)
+    const pk = pw.map(key), nk = nw.map(key)
+    const n = Math.min(6, nk.length)
+    const need = n <= 2 ? n : n - 1 // allow one corrected word in the probe
 
-    // A stale, shorter rendering we already hold.
-    if (prev.includes(next)) return prev
+    // A full re-rendering (same start, similar or greater length): newest wins.
+    const m0 = Math.min(n, pk.length)
+    if (matchAt(pk, 0, nk, m0) >= (m0 <= 2 ? m0 : m0 - 1) && nk.length >= pk.length * 0.6) return next
 
-    // The front was trimmed: the end of prev overlaps the start of next.
-    for (let k = Math.min(prev.length, next.length); k >= 12; k--) {
-      if (prev.endsWith(next.slice(0, k))) return prev + next.slice(k)
+    // Find where next begins inside prev; prefer the latest match (front-trimmed rows).
+    let at = -1
+    for (let i = pk.length - 1; i >= 0; i--) {
+      const w = Math.min(n, pk.length - i)
+      if (w < Math.min(3, n)) continue
+      // Near the end of prev only a short overlap is visible: require it exactly.
+      if (matchAt(pk, i, nk, w) >= (w < n ? w : need)) {
+        at = i
+        break
+      }
     }
-
-    // Trimmed and refined: anchor the first words of next inside prev.
-    const words = next.split(" ")
-    for (let n = Math.min(4, words.length); n >= 2; n--) {
-      const anchor = words.slice(0, n).join(" ").toLowerCase()
-      const i = prev.toLowerCase().lastIndexOf(anchor)
-      if (i > 0) return prev.slice(0, i) + next
+    if (at === 0 && nk.length < pk.length * 0.6) {
+      // Same start but much shorter: a stale or partial rendering.
+      return prev
     }
+    if (at > 0) {
+      // Entirely inside prev already (stale fragment)?
+      const covered = at + nk.length <= pk.length && matchAt(pk, at, nk, nk.length) >= nk.length - Math.floor(nk.length / 6)
+      if (covered) return prev
+      return pw.slice(0, at).concat(nw).join(" ")
+    }
+    if (at === 0) return next
 
+    // No anchor at all: a genuinely different continuation.
+    if (key(prev).includes(key(next))) return prev
     return prev + " " + next
-  }
-
-  const sameStart = (a, b) => {
-    const head = Math.min(20, a.length, b.length)
-    return head > 0 && a.slice(0, head).toLowerCase() === b.slice(0, head).toLowerCase()
   }
 
   /**
@@ -59,7 +78,7 @@
     update(rows) {
       const t = this.now()
       const seen = new Set(rows.filter((r) => norm(r.text)).map((r) => r.key))
-      for (const key of [...this.live.keys()]) if (!seen.has(key)) this.live.delete(key)
+      for (const k of [...this.live.keys()]) if (!seen.has(k)) this.live.delete(k)
       for (const row of rows) {
         const text = norm(row.text)
         if (!text) continue
@@ -92,10 +111,14 @@
     // A row re-rendered in a fresh element continues a recent entry instead of duplicating it.
     _reattach(speaker, text, t) {
       const live = new Set(this.live.values())
+      const tk = words(text).map(key)
       for (let i = this.entries.length - 1; i >= 0 && i >= this.entries.length - 6; i--) {
         const e = this.entries[i]
         if (live.has(e) || e.speaker !== speaker || t - e.end > 15000) continue
-        if (sameStart(e.text, text) || e.text.includes(text)) return e
+        const ek = words(e.text).map(key)
+        const n = Math.min(4, tk.length, ek.length)
+        if (n && matchAt(ek, 0, tk, n) >= n - (n > 2 ? 1 : 0)) return e
+        if (key(e.text).includes(key(text))) return e
       }
       return undefined
     }

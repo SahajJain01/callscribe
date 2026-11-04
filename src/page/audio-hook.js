@@ -11,7 +11,8 @@
   const remote = new Set()
   const mic = new Set()
   const peers = new Set()
-  let rec = null // { ctx, dest, recorder, sources: Map<track, node>, includeMic, seq, id }
+  let rec = null // { ctx, dest, micGain, recorder, sources: Map<track, node>, includeMic, seq, id }
+  let micOn = true // follows the call app's own mute button (the raw mic track keeps running while muted)
 
   const post = (msg, transfer) => window.postMessage({ [TAG]: "page", ...msg }, location.origin, transfer || [])
 
@@ -20,7 +21,7 @@
     if (mic.has(track) && !rec.includeMic) return
     try {
       const node = rec.ctx.createMediaStreamSource(new MediaStream([track]))
-      node.connect(rec.dest)
+      node.connect(mic.has(track) ? rec.micGain : rec.dest)
       rec.sources.set(track, node)
       track.addEventListener("ended", () => detach(track), { once: true })
     } catch (e) {
@@ -92,9 +93,12 @@
     keepAlive.offset.value = 0
     keepAlive.connect(dest)
     keepAlive.start()
+    const micGain = ctx.createGain()
+    micGain.gain.value = micOn ? 1 : 0
+    micGain.connect(dest)
     const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"].find((m) => MediaRecorder.isTypeSupported(m))
     const recorder = new MediaRecorder(dest.stream, { mimeType: mime, audioBitsPerSecond: 48000 })
-    const state = { ctx, dest, recorder, sources: new Map(), includeMic, seq: 0, id, mime }
+    const state = { ctx, dest, micGain, recorder, sources: new Map(), includeMic, seq: 0, id, mime }
     rec = state
     sweepPeers()
     remote.forEach(attach)
@@ -142,7 +146,11 @@
     const m = ev.data
     if (m.type === "start") start(m.id, m.includeMic !== false).catch((e) => post({ type: "error", id: m.id, message: String(e && e.message || e) }))
     else if (m.type === "stop") stop()
-    else if (m.type === "status") post({ type: "status", recording: Boolean(rec), remote: remote.size, mic: mic.size, sources: rec ? rec.sources.size : 0, state: rec ? rec.ctx.state : null })
+    else if (m.type === "mic") {
+      micOn = Boolean(m.on)
+      if (rec) rec.micGain.gain.setTargetAtTime(micOn ? 1 : 0, rec.ctx.currentTime, 0.02)
+    }
+    else if (m.type === "status") post({ type: "status", recording: Boolean(rec), remote: remote.size, mic: mic.size, sources: rec ? rec.sources.size : 0, state: rec ? rec.ctx.state : null, micOn })
   })
   // Recording tracks that appear mid-call (new participants, mic switches).
   setInterval(() => { if (rec) { sweepPeers(); remote.forEach(attach); mic.forEach(attach) } }, 3000)

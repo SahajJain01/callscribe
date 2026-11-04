@@ -49,7 +49,10 @@ ws.onmessage = (ev) => { const m = JSON.parse(ev.data); if (m.id && pending.has(
 const send = (method, params = {}, sessionId) => new Promise((res) => { const i = ++id; pending.set(i, res); ws.send(JSON.stringify({ id: i, method, params, sessionId })) })
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-const { result: { targetId } } = await send("Target.createTarget", { url: "https://app.slack.com/client/T000/C000" })
+// SCENARIO=muted-alone: no remote audio and you stay muted, so the recording must be silence.
+const alone = process.env.SCENARIO === "muted-alone"
+console.log("scenario:", alone ? "muted-alone" : "muted-with-remote")
+const { result: { targetId } } = await send("Target.createTarget", { url: "https://app.slack.com/client/T000/C000" + (alone ? "?noremote" : "") })
 const { result: { sessionId } } = await send("Target.attachToTarget", { targetId, flatten: true })
 const evalPage = async (expression) => (await send("Runtime.evaluate", { expression, returnByValue: true }, sessionId)).result?.result?.value
 
@@ -107,8 +110,25 @@ if (audio) {
   const stats = execFileSync("sh", ["-c", `ffmpeg -hide_banner -i "${f}" -af volumedetect -f null - 2>&1 | grep -E "mean_volume|max_volume|time="| tail -3`]).toString()
   console.log("audio:", fs.statSync(f).size, "bytes;", "ffprobe duration", dur, "\n" + stats)
   const mean = Number((stats.match(/mean_volume: (-?[\d.]+)/) || [])[1])
-  check(fs.statSync(f).size > 20000, "audio has data")
-  check(Number.isFinite(mean) && mean > -50, "audio is not silent (mean " + mean + " dB)")
+  check(fs.statSync(f).size > (alone ? 1000 : 20000), "audio has data")
+  if (alone) check(Number.isFinite(mean) && mean < -60, "muted mic is gated out: recording is silent (mean " + mean + " dB)")
+  else check(Number.isFinite(mean) && mean > -50, "remote audio recorded while you are muted (mean " + mean + " dB)")
+}
+
+// Render the popup (as a tab) so its call list can be eyeballed: <work>/popup.png
+{
+  const { result } = await send("Target.getTargets")
+  const sw = result.targetInfos.find((t) => t.type === "service_worker" && t.url.endsWith("/src/background/index.js"))
+  if (sw) {
+    const base = sw.url.split("/src/")[0]
+    const { result: { targetId: pt } } = await send("Target.createTarget", { url: base + "/src/popup/popup.html" })
+    const { result: { sessionId: ps } } = await send("Target.attachToTarget", { targetId: pt, flatten: true })
+    await send("Emulation.setDeviceMetricsOverride", { width: 360, height: 420, deviceScaleFactor: 2, mobile: false }, ps)
+    await sleep(1500)
+    const shot = await send("Page.captureScreenshot", { format: "png" }, ps)
+    fs.writeFileSync(path.join(work, "popup.png"), Buffer.from(shot.result.data, "base64"))
+    console.log("popup screenshot:", path.join(work, "popup.png"))
+  }
 }
 
 await send("Browser.close").catch(() => {})
