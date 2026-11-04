@@ -35,6 +35,7 @@
     id: "slack-huddle",
     name: "Slack huddle",
     matches: (loc) => /(^|\.)slack\.com$/.test(loc.hostname),
+    captionContainer: ".p-huddle_closed_captions",
 
     inCall() {
       return Boolean(first(SEL.inCall))

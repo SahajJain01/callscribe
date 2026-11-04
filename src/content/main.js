@@ -10,7 +10,7 @@
   const END_GRACE_MS = 4000
   const SAVE_EVERY_MS = 3000
 
-  let settings = { recordAudio: true, includeMic: true, autoCaptions: true }
+  let settings = { recordAudio: true, includeMic: true, autoCaptions: true, hideCaptions: true }
   let session = null // { id, tracker, startedAt, lastInCall, captionsTried, savedAt }
   let readTimer = 0
   let lastMuted
@@ -28,10 +28,27 @@
   const send = (msg) => chrome.runtime.sendMessage(msg).catch(() => {})
   const toPage = (msg) => window.postMessage({ [TAG]: "ext", ...msg }, location.origin)
 
-  chrome.storage.local.get("settings").then((r) => Object.assign(settings, r.settings || {}))
+  chrome.storage.local.get("settings").then((r) => {
+    Object.assign(settings, r.settings || {})
+    applyHide()
+  })
   chrome.storage.onChanged.addListener((c) => {
     if (c.settings) Object.assign(settings, c.settings.newValue || {})
+    applyHide()
   })
+
+  // Hidden captions: keep the caption box rendering (we read it) but move it off-screen.
+  function applyHide() {
+    const id = "callscribe-hide-captions"
+    let el = document.getElementById(id)
+    const sel = adapter.captionContainer
+    if (!settings.hideCaptions || !sel) return el && el.remove()
+    if (el) return
+    el = document.createElement("style")
+    el.id = id
+    el.textContent = `${sel} { position: fixed !important; left: -100000px !important; top: 0 !important; width: 800px !important; opacity: 0 !important; pointer-events: none !important; }`
+    ;(document.head || document.documentElement).appendChild(el)
+  }
 
   function startSession() {
     const id = `${adapter.id}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`

@@ -48,6 +48,8 @@ const pending = new Map()
 ws.onmessage = (ev) => { const m = JSON.parse(ev.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id) } }
 const send = (method, params = {}, sessionId) => new Promise((res) => { const i = ++id; pending.set(i, res); ws.send(JSON.stringify({ id: i, method, params, sessionId })) })
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+let ok = true
+const check = (cond, label) => { console.log((cond ? "PASS " : "FAIL ") + label); ok = ok && cond }
 
 // SCENARIO=muted-alone: no remote audio and you stay muted, so the recording must be silence.
 const alone = process.env.SCENARIO === "muted-alone"
@@ -58,11 +60,15 @@ const evalPage = async (expression) => (await send("Runtime.evaluate", { express
 
 // The fixture joins, captions for ~10 s, then leaves; the extension needs a few seconds to finalize.
 let fixtureLog = []
+let captionRight
 for (let i = 0; i < 40; i++) {
   await sleep(1000)
   fixtureLog = (await evalPage("window.__log || []")) || []
   if (fixtureLog.includes("left")) break
+  const box = await evalPage(`(()=>{const e=document.querySelector('.p-huddle_closed_captions'); if(!e||!e.textContent) return null; const r=e.getBoundingClientRect(); return r.right})()`)
+  if (box !== null && box !== undefined) captionRight = box
 }
+check(captionRight !== undefined && captionRight < 0, "caption box hidden off-screen (right edge " + captionRight + ")")
 console.log("fixture:", fixtureLog.join(" | "))
 
 const deadline = Date.now() + 30000
@@ -87,8 +93,6 @@ if (!files.length || process.env.DEBUG) {
   console.log("page CS globals:", await evalPage("JSON.stringify({hook: !!window.__callscribeAudioHook})"))
 }
 
-let ok = true
-const check = (cond, label) => { console.log((cond ? "PASS " : "FAIL ") + label); ok = ok && cond }
 const md = files.find((f) => f.endsWith(".md"))
 const audio = files.find((f) => f.endsWith(".webm"))
 check(Boolean(md), "transcript saved")

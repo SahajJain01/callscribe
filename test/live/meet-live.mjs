@@ -14,7 +14,7 @@ fs.mkdirSync(outDir, { recursive: true })
 
 const shim = `{
   runtime: { sendMessage(m) { (window.__csMsgs = window.__csMsgs || []).push(m); return Promise.resolve({ ok: true }) }, onMessage: { addListener() {} } },
-  storage: { local: { get: () => Promise.resolve({ settings: { recordAudio: true, includeMic: true, autoCaptions: true } }) }, onChanged: { addListener() {} } },
+  storage: { local: { get: () => Promise.resolve({ settings: { recordAudio: true, includeMic: true, autoCaptions: true, hideCaptions: true } }) }, onChanged: { addListener() {} } },
 }`
 const isolated = `(function (chrome) {\n${read("src/shared/merge.js")}\n${read("src/content/adapters/google-meet.js")}\n${read("src/content/main.js")}\n})(${shim})`
 
@@ -70,18 +70,30 @@ await ev(isolated + "; 'injected'")
 await ev(`(()=>{const a=window.CallScribe.adapters[0]; const orig=a.captionRows.bind(a); window.__rawRows=[]; let last=''; a.captionRows=()=>{const r=orig(); const s=JSON.stringify(r.map(x=>[x.speaker,x.text])); if(s!==last){last=s; window.__rawRows.push(s)} return r}; return 'wrapped'})()`)
 fs.writeFileSync(path.join(outDir, "READY"), "")
 console.log("injected; play speech now for", speechSecs, "s")
-await sleep(Number(speechSecs) * 1000)
+await sleep(Number(speechSecs) * 1000 * 0.6)
+const shot = await send("Page.captureScreenshot", { format: "png" })
+fs.writeFileSync(path.join(outDir, "during.png"), Buffer.from(shot.result.data, "base64"))
+console.log("caption box:", await ev(`(()=>{const e=document.querySelector('[role=region][aria-label=Captions]'); if(!e) return 'none'; const r=e.getBoundingClientRect(); return JSON.stringify({right:r.right, chars:e.textContent.length})})()`))
+await sleep(Number(speechSecs) * 1000 * 0.4)
 
+// Snapshot before leaving: Meet may replace the page after you leave.
+await sleep(3000)
+fs.writeFileSync(path.join(outDir, "raw-rows.json"), await ev("JSON.stringify(window.__rawRows||[])"))
+let msgs = await ev("JSON.stringify(window.__csMsgs || [])").then(JSON.parse)
 await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: 300, y: 300 })
 await sleep(500)
 await click("Leave call")
 await sleep(1200)
 await click("Just leave the call")
-await sleep(15000)
-fs.writeFileSync(path.join(outDir, "raw-rows.json"), await ev("JSON.stringify(window.__rawRows||[])"))
-const msgs = await ev("JSON.stringify(window.__csMsgs || [])").then(JSON.parse)
-await send("Page.stopScreencast")
-await send("Page.removeScriptToEvaluateOnNewDocument", { identifier })
+for (let i = 0; i < 12; i++) {
+  await sleep(1000)
+  const m = await ev("JSON.stringify(window.__csMsgs || [])").then(JSON.parse).catch(() => null)
+  if (!m) break
+  msgs = m
+  if (msgs.some((x) => x.type === "session-end")) break
+}
+await send("Page.stopScreencast").catch(() => {})
+await send("Page.removeScriptToEvaluateOnNewDocument", { identifier }).catch(() => {})
 
 const start = msgs.find((m) => m.type === "session-start")
 const updates = msgs.filter((m) => m.type === "session-update")
@@ -90,7 +102,7 @@ const chunks = msgs.filter((m) => m.type === "audio-chunk").sort((a, b) => a.seq
 fs.writeFileSync(path.join(outDir, "messages.json"), JSON.stringify(msgs.map((m) => (m.b64 ? { ...m, b64: m.b64.length } : m)), null, 1))
 if (chunks.length) fs.writeFileSync(path.join(outDir, "audio.webm"), Buffer.concat(chunks.map((c) => Buffer.from(c.b64, "base64"))))
 if (start && last) {
-  const session = { ...start.session, title: last.title, utterances: last.utterances, endedAt: Date.now() - 15000, audio: { chunks: chunks.length } }
+  const session = { ...start.session, title: last.title, utterances: last.utterances, endedAt: Date.now(), audio: { chunks: chunks.length } }
   fs.writeFileSync(path.join(outDir, "transcript.md"), formatTranscript(session))
 }
 console.log(JSON.stringify({

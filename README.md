@@ -31,7 +31,8 @@ Works in Chrome, Edge, Brave and other Chromium browsers. Slack huddles must be 
 - The toolbar icon shows **REC** during a call. The popup shows the live line count and audio
   size, lists recent calls with Transcript / Audio download buttons, and has the settings.
 
-Settings (popup → Settings): auto-enable captions, record audio, include my microphone,
+Settings (popup → Settings): auto-enable captions, hide captions on screen (on by default; the
+box is moved off-screen but still read, so the transcript is unaffected), record audio, include my microphone,
 auto-save files when a call ends. With auto-save off, use the popup buttons.
 
 ## How it works

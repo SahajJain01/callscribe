@@ -23,6 +23,7 @@
     id: "google-meet",
     name: "Google Meet",
     matches: (loc) => loc.hostname === "meet.google.com",
+    captionContainer: '[role="region"][aria-label="Captions"]',
 
     inCall() {
       return Boolean(document.querySelector('button[aria-label="Leave call"]') || icon("call_end"))
