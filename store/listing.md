@@ -26,7 +26,7 @@ FEATURES
 
 PRIVATE BY DESIGN
 • No account, no server, no analytics. Nothing is uploaded anywhere.
-• Free and open source (MIT): https://github.com/SahajJain01/callscribe
+• Open source (MIT): https://github.com/SahajJain01/callscribe
 
 NOTES
 • Transcripts come from the platform's own captions, so they only cover the time captions were on. The audio backup covers everything.
