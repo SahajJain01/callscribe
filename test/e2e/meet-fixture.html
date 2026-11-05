@@ -1,0 +1,71 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8" /><title>Meet - fix-ture-tst</title></head>
+<body>
+<!--
+  Mimics how Google Meet applies captions: caption text arrives on timers (like the network),
+  but the DOM is only updated inside requestAnimationFrame. Like Meet, the page keeps its own
+  reference to requestAnimationFrame from load time. In a tab that isn't drawn, rAF never
+  runs, so without CallScribe's render keepalive the captions only reach the page in one
+  burst when the tab is drawn again (the 2026-11-05 Companion-mode bug).
+  window.__truth records when each turn's first words actually arrived.
+-->
+<div id="call"></div>
+<script>
+const raf = window.requestAnimationFrame.bind(window)
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+window.__truth = []
+window.__log = []
+const queue = []
+let scheduled = false
+function apply(fn) {
+  queue.push(fn)
+  if (scheduled) return
+  scheduled = true
+  raf(() => { scheduled = false; queue.splice(0).forEach((f) => f()) })
+}
+
+const script = [
+  { at: 3000, speaker: "Alice Nguyen", text: "Morning everyone, let us go through the release plan for this week." },
+  { at: 10000, speaker: "Sahaj Jain", text: "Sure, the checkout fix is merged and the staging build looks fine." },
+  { at: 17000, speaker: "Alice Nguyen", text: "Great, then we ship on Friday after the smoke tests pass." },
+  { at: 24000, speaker: "Sahaj Jain", text: "Okay, bye everyone." }, // ends ~1 s before leaving: final flush
+]
+const LEAVE_AT = 27500
+
+function row(speaker) {
+  const r = document.createElement("div")
+  r.innerHTML = `<div><img alt=""><div><span></span></div></div><div></div>`
+  r.querySelector("span").textContent = speaker
+  return r
+}
+
+async function run() {
+  const t0 = Date.now()
+  window.__joinedAt = t0
+  document.getElementById("call").innerHTML = `
+    <div role="region" aria-label="Captions" tabindex="0"><div class="jump"><button aria-label="Jump to most recent captions">v</button></div></div>
+    <button aria-label="Turn off microphone">mic</button>
+    <button aria-label="Leave call">Leave</button>`
+  const region = document.querySelector('[role="region"][aria-label="Captions"]')
+  for (const turn of script) {
+    await sleep(Math.max(0, t0 + turn.at - Date.now()))
+    window.__truth.push({ speaker: turn.speaker, offsetMs: Date.now() - t0, firstWords: turn.text.split(" ").slice(0, 3).join(" ") })
+    let r
+    apply(() => { r = row(turn.speaker); region.insertBefore(r, region.querySelector(".jump")) })
+    const words = turn.text.split(" ")
+    for (let i = 1; i <= words.length; i++) {
+      const said = words.slice(0, i).join(" ")
+      apply(() => { r.lastElementChild.textContent = said })
+      await sleep(250)
+    }
+  }
+  await sleep(2500) // hang up a moment after the last words (they must still be flushed)
+  await sleep(Math.max(0, t0 + LEAVE_AT - Date.now()))
+  document.getElementById("call").innerHTML = "" // leave immediately (no rAF needed)
+  window.__log.push("left")
+}
+setTimeout(() => run().catch((e) => window.__log.push("error " + e)), 500)
+</script>
+</body>
+</html>

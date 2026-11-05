@@ -67,9 +67,16 @@
    * Turns repeated snapshots of visible caption rows into a list of utterances.
    * rows: [{ key, speaker, text }] where key identifies one on-screen row (usually its element).
    */
+  // Speech is ~150 words a minute; used only to backdate captions that arrive in a batch.
+  const MS_PER_WORD = 400
+  const MIN_TURN_MS = 1000
+  // A row that first shows up already this long was not seen while it was being spoken.
+  const LONG_FIRST_SIGHT_WORDS = 12
+
   class CaptionTracker {
     constructor(now = () => Date.now()) {
       this.now = now
+      this.startedAt = now() // lower bound for any backdated caption
       this.entries = []
       this.live = new Map()
       this.dirty = false
@@ -79,6 +86,7 @@
       const t = this.now()
       const seen = new Set(rows.filter((r) => norm(r.text)).map((r) => r.key))
       for (const k of [...this.live.keys()]) if (!seen.has(k)) this.live.delete(k)
+      const firstNew = this.entries.length
       for (const row of rows) {
         const text = norm(row.text)
         if (!text) continue
@@ -106,6 +114,38 @@
           this.dirty = true
         }
       }
+      this._backdate(this.entries.slice(firstNew), t, firstNew)
+    }
+
+    /**
+     * Captions normally appear a few words at a time, so "first seen" is "when it was said".
+     * When the page applies a backlog at once (tab not drawn, extension attached mid-call),
+     * several turns, or one already-long turn, appear in a single read. Instead of stamping
+     * them all with the read time, lay them out backwards from it by their length, never
+     * before the last caption we saw live (or the session start), and flag them as estimates.
+     */
+    _backdate(fresh, t, firstNew) {
+      if (!fresh.length) return
+      const len = (e) => Math.max(MIN_TURN_MS, words(e.text).length * MS_PER_WORD)
+      const isBatch = fresh.length >= 2 || words(fresh[0].text).length > LONG_FIRST_SIGHT_WORDS
+      if (!isBatch) return
+      const prev = this.entries[firstNew - 1]
+      const floor = Math.max(this.startedAt, prev ? prev.end : -Infinity)
+      const total = fresh.reduce((s, e) => s + len(e), 0)
+      const span = Math.max(0, t - floor)
+      const scale = total > span ? span / total : 1
+      let cursor = t
+      for (let i = fresh.length - 1; i >= 0; i--) {
+        const e = fresh[i]
+        const d = len(e) * scale
+        e.end = Math.round(cursor)
+        e.start = Math.round(cursor - d)
+        cursor -= d
+        if (t - e.start > 2000) e.estimated = true
+      }
+      // Keep starts strictly increasing even when squeezed into a tiny window.
+      for (let i = 1; i < fresh.length; i++) if (fresh[i].start <= fresh[i - 1].start) fresh[i].start = fresh[i - 1].start + 1
+      this.dirty = true
     }
 
     // A row re-rendered in a fresh element continues a recent entry instead of duplicating it.

@@ -21,6 +21,19 @@ test("consecutive lines by one speaker merge into a turn", () => {
   assert.deepEqual(t.map((x) => [x.speaker, x.text]), [["A", "one two"], ["B", "three"]])
 })
 
+test("estimated times are marked with ~ and explained; live times are not", () => {
+  const md = formatTranscript({
+    platformName: "Google Meet", title: "x", startedAt: start, endedAt: start + 600000,
+    utterances: [
+      { speaker: "A", text: "live", start: start + 5000, end: start + 6000 },
+      { speaker: "B", text: "batched", start: start + 300000, end: start + 310000, estimated: true },
+    ],
+  })
+  assert.match(md, /\*\*A\*\* `00:00:05`/)
+  assert.match(md, /\*\*B\*\* `~00:05:00`/)
+  assert.match(md, /Times marked ~ are estimates/)
+})
+
 test("transcript markdown", () => {
   const md = formatTranscript({
     platformName: "Slack huddle",

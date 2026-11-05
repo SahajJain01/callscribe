@@ -59,6 +59,8 @@
     })
     lastMuted = undefined
     syncMute()
+    // Keep the page applying caption updates even when the tab isn't drawn (see render-keepalive.js).
+    toPage({ type: "render-keepalive", on: true })
     if (settings.recordAudio) toPage({ type: "start", id, includeMic: settings.includeMic })
     observe()
   }
@@ -80,6 +82,7 @@
     save(true)
     session = null
     observer && observer.disconnect()
+    toPage({ type: "render-keepalive", on: false })
     if (settings.recordAudio) {
       toPage({ type: "stop" })
       // The page posts 'stopped' after the last chunk; finalize then (or after a timeout).

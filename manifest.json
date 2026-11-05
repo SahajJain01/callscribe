@@ -39,6 +39,7 @@
         "https://app.slack.com/*"
       ],
       "js": [
+        "src/page/render-keepalive.js",
         "src/page/audio-hook.js"
       ],
       "run_at": "document_start",

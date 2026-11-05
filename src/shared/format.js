@@ -39,8 +39,9 @@ export function turns(utterances) {
     if (last && last.speaker === u.speaker && u.start - last.end < 4000) {
       last.text += " " + u.text
       last.end = Math.max(last.end, u.end)
+      last.estimated = last.estimated || Boolean(u.estimated)
     } else {
-      out.push({ speaker: u.speaker, text: u.text, start: u.start, end: u.end })
+      out.push({ speaker: u.speaker, text: u.text, start: u.start, end: u.end, estimated: Boolean(u.estimated) })
     }
   }
   return out
@@ -61,8 +62,9 @@ export function formatTranscript(session) {
   if (speakers.length) lines.push(`- Speakers: ${speakers.join(", ")}`)
   if (session.audio && session.audio.chunks) lines.push(`- Audio backup: ${fileBase(session)}.webm (timestamps below match it)`)
   if (session.url) lines.push(`- Link: ${session.url}`)
+  if (ts.some((t) => t.estimated)) lines.push("- Times marked ~ are estimates: those captions reached the page in a batch, not live.")
   lines.push("", "---", "")
   if (!ts.length) lines.push("_No captions were captured. Were captions turned on?_", "")
-  for (const t of ts) lines.push(`**${t.speaker}** \`${clock(t.start - start)}\``, t.text, "")
+  for (const t of ts) lines.push(`**${t.speaker}** \`${t.estimated ? "~" : ""}${clock(t.start - start)}\``, t.text, "")
   return lines.join("\n")
 }

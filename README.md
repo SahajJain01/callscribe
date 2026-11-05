@@ -44,6 +44,7 @@ auto-save files when a call ends. With auto-save off, use the popup buttons.
 | Part | File | What it does |
 |---|---|---|
 | Audio hook | `src/page/audio-hook.js` | Runs in the page before the call app loads. Notes every incoming WebRTC audio track and the microphone the app opens, mixes them with Web Audio and records Opus chunks (5 s). It changes nothing the app sends or plays. Your mic goes through a gate that follows the app's mute button, so nothing is recorded while you're muted. |
+| Render keepalive | `src/page/render-keepalive.js` | Meet applies caption updates in `requestAnimationFrame`, which Chrome stops running when the tab isn't drawn (background tab, minimized window, Companion-mode tab). During a call, each animation frame gets a fallback timer so captions keep reaching the page, and get timestamped, while the tab is hidden. |
 | Watcher | `src/content/main.js` | Picks the adapter for the site, detects call start/end, reads caption rows, auto-enables captions, forwards mute state and audio chunks. |
 | Caption merging | `src/shared/merge.js` | Caption UIs rewrite rows as recognition improves and trim long rows. Rows are merged with word-level fuzzy alignment so corrections replace text instead of duplicating it. |
 | Storage/export | `src/background/index.js`, `src/shared/db.js` | IndexedDB keeps the transcript and audio chunks as they stream in, so a crash or closed tab loses at most a few seconds. On call end (or tab close / stale session) it writes the `.md` and `.webm`. |
@@ -87,6 +88,14 @@ node test/live/meet-live.mjs <tabTargetId> <outDir> [secs]
 Chromium; branded Chrome 137+ ignores it). Set `CHROME=/path/to/chrome`.
 
 ## Limits
+
+- Timestamps are when a caption reached the page. If captions still arrive in a batch
+  (e.g. the extension attached mid-call), their times are estimated from their length,
+  marked `~` in the transcript.
+- In an undrawn tab Chrome runs timers at most about once a second, so captions spoken in
+  the last second before you hang up may be cut short.
+- Companion mode doesn't play or send call audio, so its audio backup is silent; the
+  transcript still works.
 
 - Transcripts are only as good as the platform's captions, and only cover the time captions
   were on. The audio backup is there for everything else.
