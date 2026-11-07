@@ -54,9 +54,10 @@ const check = (cond, label) => { console.log((cond ? "PASS " : "FAIL ") + label)
 // SCENARIO=muted-alone: no remote audio and you stay muted, so the recording must be silence.
 const alone = process.env.SCENARIO === "muted-alone"
 console.log("scenario:", alone ? "muted-alone" : "muted-with-remote")
-const { result: { targetId } } = await send("Target.createTarget", { url: "https://app.slack.com/client/T000/C000" + (alone ? "?noremote" : "") })
+const { result: { targetId } } = await send("Target.createTarget", { url: "about:blank" })
 const { result: { sessionId } } = await send("Target.attachToTarget", { targetId, flatten: true })
 const evalPage = async (expression) => (await send("Runtime.evaluate", { expression, returnByValue: true }, sessionId)).result?.result?.value
+const viewW = await evalPage("innerWidth")
 
 // Settings are changed the way the popup does it: chrome.storage.local in the service worker.
 async function swSession() {
@@ -68,6 +69,19 @@ async function swSession() {
   }
 }
 const sws = await swSession()
+const swEval = async (expression) => (await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true }, sws)).result?.result?.value
+// The user parked the pill at the top-right while it was narrow: it must stay on screen as
+// captions widen it, and expanding must not overwrite the saved spot.
+const parkedPos = { x: viewW - 80, y: 8 }
+const storedPos = () => swEval(`chrome.storage.local.get("overlayPos").then((r) => JSON.stringify(r.overlayPos))`)
+// The worker can still be starting up; retry until the write is visible.
+for (let i = 0; i < 20 && (await storedPos()) !== JSON.stringify(parkedPos); i++) {
+  await swEval(`chrome.storage.local.set({ overlayPos: ${JSON.stringify(parkedPos)} }).then(() => true)`)
+  await sleep(100)
+}
+check((await storedPos()) === JSON.stringify(parkedPos), `overlayPos parked near the right edge before the call (${JSON.stringify(parkedPos)})`)
+await send("Page.navigate", { url: "https://app.slack.com/client/T000/C000" + (alone ? "?noremote" : "") }, sessionId)
+const hostRect = () => evalPage(`(()=>{const h=document.getElementById('callscribe-overlay'); if(!h) return null; const r=h.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, vw: innerWidth, vh: innerHeight }})()`)
 const setShowOverlay = (on) => send("Runtime.evaluate", { expression: `chrome.storage.local.get("settings").then((r) => chrome.storage.local.set({ settings: { ...(r.settings || {}), showOverlay: ${on} } }))`, awaitPromise: true }, sws)
 // The overlay's host element exposes its state as attributes (its shadow root is closed).
 const overlayInfo = () => evalPage(`(()=>{const h=document.getElementById('callscribe-overlay'); return h ? { state: h.getAttribute('data-state'), latest: h.getAttribute('data-latest') } : null})()`)
@@ -83,6 +97,9 @@ let overlayShown = false
 let overlayLatest = false
 let toggled = false
 let clicked = false
+let reattached = false
+let worstOverflow = 0
+let pillChecks = 0
 for (let i = 0; i < 40; i++) {
   await sleep(1000)
   fixtureLog = (await evalPage("window.__log || []")) || []
@@ -92,6 +109,20 @@ for (let i = 0; i < 40; i++) {
   const ov = await overlayInfo()
   if (ov) overlayShown = true
   if (ov && /Morning everyone|Sure, I pushed|Great, ship it/.test(ov.latest || "")) overlayLatest = true
+  // Whenever the pill shows a caption, it must sit fully inside the viewport.
+  if (ov && ov.state === "collapsed" && ov.latest) {
+    const r = await hostRect()
+    if (r) {
+      pillChecks++
+      worstOverflow = Math.max(worstOverflow, r.right - r.vw, -r.left, r.bottom - r.vh, -r.top)
+    }
+  }
+  // Page code removing the host: the next update puts it back.
+  if (overlayLatest && !reattached && !toggled) {
+    await evalPage(`document.getElementById('callscribe-overlay').remove()`)
+    check(await waitOverlay(true, 2500), "overlay host re-attached after page code removed it")
+    reattached = true
+  }
   // Mid-call toggle from the settings: the overlay goes and comes back without a new session.
   if (overlayLatest && !toggled) {
     toggled = true
@@ -111,11 +142,25 @@ for (let i = 0; i < 40; i++) {
     await sleep(300)
     check(await evalPage(`document.activeElement && document.activeElement.id === 'cs-focus-probe'`), "overlay click keeps page focus")
     check((await overlayInfo())?.state === "expanded", "overlay expands on click")
+    const cr = await hostRect()
+    check(cr && cr.right <= cr.vw && cr.left >= 0, `expanded card inside the viewport (right ${cr && cr.right} <= ${cr && cr.vw})`)
+    check((await storedPos()) === JSON.stringify(parkedPos), "expanding does not overwrite the saved overlayPos")
     // Render the tab with the overlay expanded so it can be eyeballed: <work>/overlay.png
     await sleep(500)
     const shot = await send("Page.captureScreenshot", { format: "png" }, sessionId)
     fs.writeFileSync(path.join(work, "overlay.png"), Buffer.from(shot.result.data, "base64"))
     console.log("overlay screenshot:", path.join(work, "overlay.png"))
+    // Collapse via the card header: the pill goes back to the saved spot (clamped to the right edge),
+    // not to where the wider card had to be pushed.
+    const hr = await hostRect()
+    for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+      await send("Input.dispatchMouseEvent", { type, x: (hr.left + hr.right) / 2, y: hr.top + 12, button: type === "mouseMoved" ? "none" : "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: type === "mouseMoved" ? 0 : 1 }, sessionId)
+    }
+    await sleep(300)
+    const pr = await hostRect()
+    check((await overlayInfo())?.state === "collapsed", "overlay collapses on header click")
+    check(pr && Math.abs(pr.right - (pr.vw - 4)) <= 1, `collapsed pill returns to the saved right-edge spot (right ${pr && pr.right}, viewport ${pr && pr.vw})`)
+    check((await storedPos()) === JSON.stringify(parkedPos), "collapsing does not overwrite the saved overlayPos")
   }
 }
 check(captionRight !== undefined && captionRight < 0, "caption box hidden off-screen (right edge " + captionRight + ")")
@@ -123,6 +168,8 @@ check(overlayShown, "overlay shown during the call")
 check(overlayLatest, "overlay shows the latest caption")
 check(toggled, "overlay toggle ran during the call")
 check(clicked, "overlay click ran during the call")
+check(reattached, "overlay re-attach check ran during the call")
+check(pillChecks > 0 && worstOverflow <= 0, `pill parked at the right edge stays on screen as captions widen it (${pillChecks} checks, worst overflow ${worstOverflow} px)`)
 console.log("fixture:", fixtureLog.join(" | "))
 check(await waitOverlay(false, 6000), "overlay removed after the call")
 

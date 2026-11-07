@@ -75,13 +75,23 @@
       source: streamActive() ? "feed" : captionsOn() ? "cc" : "none",
       audio: session.audio,
       micMuted: lastMuted,
+      micRecorded: Boolean(settings.recordAudio && settings.includeMic),
       lines: feed.length ? feed : session.tracker.view(),
       lastCaptionAt: session.lastCaptionAt,
     }
   }
+  // After the extension is updated or reloaded mid-call this script is orphaned
+  // (chrome.runtime.id is gone) and nothing is saved any more: don't show a live overlay then.
+  function contextAlive() {
+    try {
+      return Boolean(chrome.runtime && chrome.runtime.id)
+    } catch {
+      return false
+    }
+  }
   function syncOverlay() {
     try {
-      if (!session || settings.showOverlay === false) {
+      if (!session || settings.showOverlay === false || !contextAlive()) {
         if (overlay) overlay.remove()
         overlay = null
         return

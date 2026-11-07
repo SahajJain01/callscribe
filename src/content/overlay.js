@@ -8,6 +8,7 @@
   const DRAG_PX = 4
   const SILENCE_MS = 30000
   const FOLLOW_PX = 24
+  const AUDIO_START_MS = 10000
 
   const pad = (n) => String(n).padStart(2, "0")
 
@@ -40,21 +41,28 @@
     starting: { value: "starting", level: "plain" },
     off: { value: "off", level: "plain" },
     error: { value: "error", level: "warn" },
+    stalled: { value: "not starting", level: "warn" },
   }
 
+  // warn: caption silence. dotWarn: anything the collapsed pill should flag (caption silence,
+  // audio error, audio stuck starting). A muted mic is normal for most of a call, so it isn't.
   function overlayModel(state, now) {
     const startedAt = state.startedAt || now
     const lines = state.lines || []
     const warn = now - startedAt > SILENCE_MS && now - (state.lastCaptionAt || startedAt) > SILENCE_MS
     const last = lines[lines.length - 1]
-    const status = [captionRow(state, warn), { label: "Audio", ...(AUDIO[state.audio] || AUDIO.off) }]
-    if (state.micMuted === true) status.push({ label: "Mic", value: "muted, not recorded", level: "warn" })
+    const audioKey = state.audio === "starting" && now - startedAt > AUDIO_START_MS ? "stalled" : state.audio
+    const audio = AUDIO[audioKey] || AUDIO.off
+    const status = [captionRow(state, warn), { label: "Audio", ...audio }]
+    if (state.micRecorded === false) status.push({ label: "Mic", value: "not recorded", level: "plain" })
+    else if (state.micMuted === true) status.push({ label: "Mic", value: "muted, not recorded", level: "warn" })
     else if (state.micMuted === false) status.push({ label: "Mic", value: "on", level: "ok" })
     status.push({ label: "Lines", value: String(lines.length), level: "plain" })
     return {
       elapsed: formatElapsed(now - startedAt),
       latest: last ? { speaker: last.speaker, text: last.text, live: !!last.live } : null,
       warn,
+      dotWarn: warn || audio.level === "warn",
       status,
     }
   }
@@ -191,19 +199,30 @@
       if (host.getAttribute(name) !== value) host.setAttribute(name, value)
     }
 
+    // pos is where the user put it (drag or saved overlayPos). What's shown is a clamped copy,
+    // so growing or expanding near an edge never moves the remembered spot.
     const viewport = () => ({ vw: win.innerWidth, vh: win.innerHeight })
+    let size = { w: 0, h: 0 }
     function place() {
+      const r = host.getBoundingClientRect()
+      size = { w: r.width, h: r.height }
       if (!pos) {
         host.style.left = "50%"
         host.style.transform = "translateX(-50%)"
         host.style.top = "8px"
-        return
+        return null
       }
-      const r = host.getBoundingClientRect()
-      pos = clampPos(pos, { w: r.width, h: r.height }, viewport())
+      const shown = clampPos(pos, size, viewport())
       host.style.transform = "none"
-      host.style.left = `${pos.x}px`
-      host.style.top = `${pos.y}px`
+      host.style.left = `${shown.x}px`
+      host.style.top = `${shown.y}px`
+      return shown
+    }
+    // The pill's width follows its text (up to 420 px): re-clamp whenever the size changes.
+    function placeIfResized() {
+      if (!pos) return
+      const r = host.getBoundingClientRect()
+      if (r.width !== size.w || r.height !== size.h) place()
     }
 
     function atBottom() {
@@ -224,7 +243,7 @@
     function render(state) {
       const now = Date.now()
       const m = overlayModel(state, now)
-      const dotCls = m.warn ? "dot warn" : "dot"
+      const dotCls = m.dotWarn ? "dot warn" : "dot"
       if (seen.dot !== dotCls) {
         seen.dot = dotCls
         pDot.className = cDot.className = dotCls
@@ -250,6 +269,7 @@
         }
       }
       if (expanded) renderList(state)
+      placeIfResized()
     }
 
     function toggle() {
@@ -280,8 +300,9 @@
       if (!drag.moving && Math.hypot(dx, dy) <= DRAG_PX) return
       drag.moving = true
       dragged = true
+      // A drag is the user choosing a spot: remember what is actually shown.
       pos = { x: drag.x + dx, y: drag.y + dy }
-      place()
+      pos = place()
     }
     function onUp(e) {
       if (!drag || e.pointerId !== drag.id) return
@@ -349,6 +370,8 @@
     return {
       update(state) {
         if (removed || !state) return
+        // Page code may have removed the host; put it back while the overlay is alive.
+        if (!host.isConnected) doc.documentElement.appendChild(host)
         last = state
         render(state)
       },

@@ -114,6 +114,41 @@ test("overlayModel: audio states", () => {
   assert.deepEqual(at("error"), { label: "Audio", value: "error", level: "warn" })
 })
 
+test("overlayModel: dot is calm while recording, amber on audio error", () => {
+  assert.equal(overlayModel(state(), T0 + 1000).dotWarn, false)
+  assert.equal(overlayModel(state({ audio: "error" }), T0 + 1000).dotWarn, true)
+})
+
+test("overlayModel: dot turns amber on 30 s caption silence", () => {
+  assert.equal(overlayModel(state(), T0 + 30001).dotWarn, true)
+})
+
+test("overlayModel: muted mic does not turn the dot amber", () => {
+  assert.equal(overlayModel(state({ micMuted: true }), T0 + 1000).dotWarn, false)
+})
+
+test("overlayModel: audio starting is plain up to 10 s, then warns 'not starting'", () => {
+  const at = (now) => overlayModel(state({ audio: "starting" }), now)
+  assert.deepEqual(row(at(T0 + 10000), "Audio"), { label: "Audio", value: "starting", level: "plain" })
+  assert.equal(at(T0 + 10000).dotWarn, false)
+  assert.deepEqual(row(at(T0 + 10001), "Audio"), { label: "Audio", value: "not starting", level: "warn" })
+  assert.equal(at(T0 + 10001).dotWarn, true)
+})
+
+test("overlayModel: mic not recorded reads 'not recorded', plain, whatever the mute state", () => {
+  for (const micMuted of [true, false, undefined]) {
+    const r = row(overlayModel(state({ micMuted, micRecorded: false }), T0 + 1000), "Mic")
+    assert.deepEqual(r, { label: "Mic", value: "not recorded", level: "plain" })
+  }
+})
+
+test("overlayModel: mic recorded keeps the mute-based row", () => {
+  const at = (micMuted) => row(overlayModel(state({ micMuted, micRecorded: true }), T0 + 1000), "Mic")
+  assert.deepEqual(at(false), { label: "Mic", value: "on", level: "ok" })
+  assert.deepEqual(at(true), { label: "Mic", value: "muted, not recorded", level: "warn" })
+  assert.equal(at(undefined), undefined)
+})
+
 // Minimal DOM stand-in: enough for renderRows (createElement, appendChild, children, textContent, className).
 function fakeDoc() {
   let created = 0
