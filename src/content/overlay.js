@@ -303,6 +303,18 @@
       target.addEventListener("pointercancel", onCancel)
     }
 
+    // Keep keyboard focus on the page: cancelling mousedown stops Chromium's focus fix-up
+    // (pointerdown preventDefault alone does not). Presses on the log's scrollbar are left
+    // alone so the native thumb drag keeps working; those never move focus anyway.
+    function onLogScrollbar(e) {
+      if (e.target !== log) return false
+      const r = log.getBoundingClientRect()
+      return e.clientX >= r.left + log.clientLeft + log.clientWidth
+    }
+    shadow.addEventListener("mousedown", (e) => {
+      if (!onLogScrollbar(e)) e.preventDefault()
+    })
+
     log.addEventListener("scroll", () => {
       follow = atBottom()
       jump.hidden = follow
