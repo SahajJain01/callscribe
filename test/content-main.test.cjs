@@ -221,3 +221,107 @@ test("session creation is rate-limited per tab (security M6)", async () => {
   const n = c.ofType(c.sent, "session-start").length
   assert.ok(n >= 1 && n <= 6, `${n} sessions created by a flapping call UI in ${20 * 7} s`)
 })
+
+// ---- durable saves: every write is acknowledged, failures are retried (lifecycle F5, F10)
+const chunkMsg = (id, seq) => ({ type: "chunk", id, seq, mime: "audio/webm;codecs=opus", buf: new Uint8Array([1, 2, 3]).buffer })
+
+test("a failed chunk write is retried until the service worker acknowledges it (F10)", async () => {
+  let fails = 2
+  const { c, id } = await joined({ reply: (m) => (m.type === "audio-chunk" && fails-- > 0 ? { error: "QuotaExceededError" } : { ok: true }) })
+  c.fromPage({ type: "started", id })
+  c.fromPage(chunkMsg(id, 0))
+  for (let i = 0; i < 10; i++) { await c.flush(); c.advance(1000) }
+  await c.flush()
+  assert.deepEqual(c.ofType(c.sent, "audio-chunk").map((m) => m.seq), [0, 0, 0])
+  assert.notEqual(c.overlays.at(-1).updates.at(-1).audio, "save-failed")
+})
+
+test("a rejected send (worker restarting) is retried too", async () => {
+  let fails = 1
+  const { c, id } = await joined({ reply: (m) => { if (m.type === "audio-chunk" && fails-- > 0) throw new Error("Could not establish connection"); return { ok: true } } })
+  c.fromPage(chunkMsg(id, 0))
+  for (let i = 0; i < 5; i++) { await c.flush(); c.advance(1000) }
+  assert.equal(c.ofType(c.sent, "audio-chunk").length, 2)
+})
+
+test("a chunk that keeps failing shows Audio 'save failed' in the overlay (F10)", async () => {
+  const { c, id } = await joined({ reply: (m) => (m.type === "audio-chunk" ? { error: "QuotaExceededError" } : { ok: true }) })
+  c.fromPage({ type: "started", id })
+  c.fromPage(chunkMsg(id, 0))
+  for (let i = 0; i < 40; i++) { await c.flush(); c.advance(1000) }
+  await c.flush()
+  c.advance(1000)
+  assert.equal(c.overlays.at(-1).updates.at(-1).audio, "save-failed")
+  const n = c.ofType(c.sent, "audio-chunk").length
+  assert.ok(n > 2 && n < 12, `bounded retries (${n})`)
+})
+
+test("a refusal the worker marks fatal (deleted or unknown session) is not retried", async () => {
+  const { c, id } = await joined({ reply: (m) => (m.type === "audio-chunk" ? { error: "no such session", fatal: true } : { ok: true }) })
+  c.fromPage({ type: "started", id })
+  c.fromPage(chunkMsg(id, 0))
+  for (let i = 0; i < 20; i++) { await c.flush(); c.advance(1000) }
+  assert.equal(c.ofType(c.sent, "audio-chunk").length, 1)
+  assert.equal(c.overlays.at(-1).updates.at(-1).audio, "save-failed")
+})
+
+test("session-end waits until the last chunk is stored (F5)", async () => {
+  let release
+  const held = new Promise((r) => (release = r))
+  const { c, id } = await joined({ reply: (m) => (m.type === "audio-chunk" ? held : { ok: true }) })
+  c.fromPage({ type: "started", id })
+  c.state.inCall = false
+  c.advance(6000)
+  await c.flush()
+  c.fromPage(chunkMsg(id, 0)) // the final chunk, then 'stopped'
+  c.fromPage({ type: "stopped", id })
+  await c.flush()
+  c.advance(2000)
+  await c.flush()
+  assert.equal(c.ofType(c.sent, "session-end").length, 0, "session-end sent while the last chunk was still being stored")
+  release({ ok: true })
+  await c.flush()
+  assert.equal(c.ofType(c.sent, "session-end").length, 1)
+})
+
+test("a failed caption save is retried, not left until the next 15 s resend (F10)", async () => {
+  let fails = 1
+  const { c } = await joined({ reply: (m) => (m.type === "session-update" && fails-- > 0 ? { error: "boom" } : { ok: true }) })
+  assert.equal(c.ofType(c.sent, "session-update").length, 1, "the first save (at join) fails")
+  for (let i = 0; i < 4; i++) { c.advance(1000); await c.flush() }
+  assert.ok(c.ofType(c.sent, "session-update").length >= 2, "no retry within 4 s")
+})
+
+test("caption saves carry an increasing revision, so a late retry can't overwrite newer text", async () => {
+  const { c } = await joined()
+  for (let i = 0; i < 40; i++) { c.advance(1000); await c.flush() }
+  const revs = c.ofType(c.sent, "session-update").map((m) => m.rev)
+  assert.ok(revs.length >= 2 && revs.every((r, i) => Number.isInteger(r) && (i === 0 || r > revs[i - 1])), JSON.stringify(revs))
+})
+
+test("a failed session-start is retried before anything else for that session is sent", async () => {
+  let fails = 1
+  const c = createContent({ reply: (m) => (m.type === "session-start" && fails-- > 0 ? { error: "boom" } : { ok: true }) })
+  await c.flush()
+  c.state.inCall = true
+  c.advance(1000)
+  await c.flush()
+  const id = c.ofType(c.sent, "session-start")[0].session.id
+  c.fromPage(chunkMsg(id, 0))
+  assert.equal(c.ofType(c.sent, "audio-chunk").length, 0, "chunk sent before the session was stored")
+  for (let i = 0; i < 4; i++) { c.advance(1000); await c.flush() }
+  assert.equal(c.ofType(c.sent, "session-start").length, 2)
+  assert.equal(c.ofType(c.sent, "audio-chunk").length, 1)
+})
+
+test("session-end carries when the call was last seen, not when the end was noticed (M1)", async () => {
+  const { c } = await joined({ settings: { recordAudio: false } })
+  c.advance(10000)
+  const lastSeen = c.now
+  c.state.inCall = false
+  c.advance(6000)
+  await c.flush()
+  const end = c.ofType(c.sent, "session-end")[0]
+  assert.ok(end, "no session-end")
+  assert.equal(end.at, lastSeen)
+})

@@ -44,6 +44,7 @@
     off: { value: "off", level: "plain" },
     error: { value: "error", level: "warn" },
     stalled: { value: "not starting", level: "warn" },
+    "save-failed": { value: "save failed", level: "warn" }, // the browser couldn't store it
   }
 
   // warn: caption silence. dotWarn: anything the collapsed pill should flag (caption silence,

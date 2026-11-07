@@ -241,3 +241,9 @@ test("overlayModel: orphaned after an update, the pill only carries the reload w
   assert.equal(m.dotWarn, true)
   assert.equal(m.latest, null)
 })
+
+test("overlayModel: audio that could not be saved is a warning, flagged on the pill (lifecycle F10)", () => {
+  const m = overlayModel(state({ audio: "save-failed" }), T0 + 1000)
+  assert.deepEqual(row(m, "Audio"), { label: "Audio", value: "save failed", level: "warn" })
+  assert.equal(m.dotWarn, true)
+})

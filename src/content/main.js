@@ -11,6 +11,11 @@
 // Turning audio off mid-call pauses that recorder, on again resumes it (or starts it if the
 // call began with audio off); the mic setting attaches/detaches the mic mid-call.
 //
+// Every write to the service worker is acknowledged (see post/deliver): failures are retried
+// with backoff, a session's writes wait until its session-start is stored, and session-end is
+// sent only once every earlier write settled, so the last chunk is stored before export.
+// Audio that still can't be stored shows as Audio "save failed" in the overlay.
+//
 // After the extension is updated or reloaded, this script is orphaned (chrome.runtime.id is
 // gone, sendMessage throws). It then stops the recorder and render keepalive, drops the
 // session and shows the pill as a warning while a call is on screen.
@@ -30,6 +35,7 @@
   const SESSIONS_PER_WINDOW = 6
   const SESSION_WINDOW_MS = 10 * 60 * 1000
   const ORPHAN_TEXT = "CallScribe was updated. Reload this tab to keep recording"
+  const RETRY_MS = [500, 1000, 2000, 4000, 8000] // then give up on that write (~15 s)
 
   let settings = { recordAudio: true, includeMic: true, autoCaptions: true, hideCaptions: true, showOverlay: true }
   // { id, tracker, utterances, startedAt, lastInCall, captionsTried, savedAt, audio, lastCaptionAt, rec: { paused, includeMic, acked } | null }
@@ -59,16 +65,60 @@
     }
   }
   // sendMessage throws synchronously once the extension context is gone: that is the orphan signal.
-  function send(msg) {
-    if (orphaned) return
-    let p
+  function request(msg) {
+    if (orphaned) return Promise.resolve(undefined)
     try {
-      p = chrome.runtime.sendMessage(msg)
+      return Promise.resolve(chrome.runtime.sendMessage(msg))
     } catch (e) {
       becomeOrphan()
-      return
+      return Promise.resolve(undefined)
     }
-    if (p && p.catch) p.catch(() => {})
+  }
+  // One write, retried until the worker acknowledges it ({ok}). {error, fatal} (deleted session,
+  // wrong tab) is final. Resolves true when stored; onFail runs when it gives up.
+  function deliver(msg, onFail) {
+    return new Promise((resolve) => {
+      let attempt = 0
+      const go = () => {
+        request(msg)
+          .then((r) => r || { error: "no reply" }, (e) => ({ error: String((e && e.message) || e) }))
+          .then((r) => {
+            if (orphaned) return resolve(false)
+            if (!r.error) return resolve(true)
+            if (r.fatal || attempt >= RETRY_MS.length) {
+              console.debug("[CallScribe] save failed", msg.type, r.error)
+              if (onFail) onFail(r)
+              return resolve(false)
+            }
+            setTimeout(go, RETRY_MS[attempt++])
+          })
+      }
+      go()
+    })
+  }
+  // Per-session outbox: nothing goes out before session-start is stored.
+  function newBox(s, startMsg) {
+    const box = { ready: false, waiting: [], pending: new Set() }
+    box.started = deliver(startMsg).then(() => {
+      box.ready = true
+      for (const [m, f] of box.waiting.splice(0)) post(s, m, f)
+    })
+    return box
+  }
+  function post(s, msg, onFail) {
+    const box = s.box
+    if (!box.ready) return void box.waiting.push([msg, onFail])
+    const p = deliver(msg, onFail)
+    box.pending.add(p)
+    p.then(() => box.pending.delete(p))
+  }
+  async function drained(box) {
+    await box.started
+    while (box.pending.size) await Promise.all([...box.pending])
+  }
+  function audioSaveFailed(s) {
+    s.audioSaveFailed = true
+    if (session === s) syncOverlay()
   }
 
   // Your mic is only recorded while the call app positively says you're unmuted.
@@ -154,7 +204,7 @@
       platform: adapter.id,
       startedAt: session.startedAt,
       source: streamActive() ? "feed" : captionsOn() ? "cc" : "none",
-      audio: session.audio,
+      audio: session.audioSaveFailed ? "save-failed" : session.audio,
       micMuted: lastMuted,
       micRecorded: Boolean(rec && !rec.paused && rec.includeMic),
       lines: feed.length ? feed : session.tracker.view(),
@@ -240,7 +290,7 @@
     if (settings.recordAudio) {
       if (!s.rec) {
         s.rec = { paused: false, includeMic, acked: false }
-        owned.set(s.id, { nextSeq: 0 })
+        owned.set(s.id, { nextSeq: 0, session: s })
         s.audio = "starting"
         toPage({ type: "start", id: s.id, includeMic })
       } else if (s.rec.paused) {
@@ -271,10 +321,10 @@
     const id = `${adapter.id}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
     session = {
       id, tracker: new CS.CaptionTracker(), utterances: new CS.UtteranceTracker(), startedAt: Date.now(), lastInCall: Date.now(), captionsTried: 0, savedAt: 0,
-      audio: "off", lastCaptionAt: 0, rec: null,
+      audio: "off", lastCaptionAt: 0, rec: null, rev: 0, audioSaveFailed: false,
     }
     names.forEach((name, speaker) => session.utterances.setName(speaker, name))
-    send({
+    session.box = newBox(session, {
       type: "session-start",
       session: { id, platform: adapter.id, platformName: adapter.name, title: adapter.title(), url: location.href, startedAt: session.startedAt },
     })
@@ -301,7 +351,12 @@
     const fromFeed = s.utterances.entries.length > 0
     const utterances = fromFeed ? s.utterances.snapshot() : s.tracker.snapshot()
     ;(fromFeed ? s.tracker : s.utterances).dirty = false
-    send({ type: "session-update", id: s.id, title: s.title, utterances, captionsOn: captionsOn() })
+    // rev: a retried older snapshot never overwrites a newer one. A save that keeps failing
+    // is redone from the latest state on the next heartbeat.
+    post(s, { type: "session-update", id: s.id, rev: ++s.rev, title: s.title, utterances, captionsOn: captionsOn() }, () => {
+      s.savedAt = 0
+      ;(fromFeed ? s.utterances : s.tracker).dirty = true
+    })
   }
 
   // Everything in the page that belongs to the live session: captions, keepalive, mic gate.
@@ -327,14 +382,18 @@
     syncOverlay()
     if (s.rec) toPage({ type: "stop", id: s.id })
     save(s, true)
-    if (!s.rec) return send({ type: "session-end", id: s.id, reason })
-    // The page posts 'stopped' after the last chunk; finalize then (or after a timeout).
+    // When the call ended: the last time it was seen on screen, or now if the page is closing.
+    const at = reason === "left" ? s.lastInCall : Date.now()
+    const end = () => drained(s.box).then(() => deliver({ type: "session-end", id: s.id, reason, at }))
+    if (!s.rec) return void end()
+    // The page posts 'stopped' after the last chunk; finalize once everything before it is stored
+    // (or after a timeout: the worker still takes chunks that arrive later, until it exports).
     let finished = false
     const finish = () => {
       if (finished) return
       finished = true
       stopWaiters.delete(s.id)
-      send({ type: "session-end", id: s.id, reason })
+      end()
     }
     stopWaiters.set(s.id, finish)
     setTimeout(finish, STOP_WAIT_MS)
@@ -399,7 +458,8 @@
       if (!(buf instanceof ArrayBuffer) || !buf.byteLength || buf.byteLength > MAX_CHUNK_BYTES) return
       if (!Number.isInteger(seq) || seq < rec.nextSeq || typeof mime !== "string" || !AUDIO_MIME.test(mime)) return
       rec.nextSeq = seq + 1
-      send({ type: "audio-chunk", id: m.id, seq, mime, b64: b64(buf) })
+      const s = rec.session
+      if (s) post(s, { type: "audio-chunk", id: m.id, seq, mime, b64: b64(buf) }, () => audioSaveFailed(s))
     } else if (type === "stopped") {
       owned.delete(m.id)
       const done = stopWaiters.get(m.id)
@@ -412,7 +472,7 @@
       const detail = { type, id: m.id }
       for (const k of ["mime", "remote", "mic", "state"]) if (typeof m[k] === "string" || typeof m[k] === "number") detail[k] = m[k]
       if (typeof m.message === "string") detail.message = m.message.slice(0, 300)
-      send({ type: "audio-" + type, id: m.id, detail })
+      if (rec.session) post(rec.session, { type: "audio-" + type, id: m.id, detail })
     }
   }
   if (bridge) bridge.onMessage(onPageMessage)

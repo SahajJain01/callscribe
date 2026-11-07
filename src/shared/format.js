@@ -47,7 +47,9 @@ export function turns(utterances) {
   return out
 }
 
-export function formatTranscript(session) {
+// opts.audioFile: the audio file actually written next to this transcript (a name), or null
+// when the audio couldn't be saved. Left out: the old guess from the session's base name.
+export function formatTranscript(session, opts = {}) {
   const start = session.startedAt
   const end = session.endedAt || session.updatedAt || start
   const ts = turns(session.utterances)
@@ -60,7 +62,10 @@ export function formatTranscript(session) {
     `- Duration: ${clock(end - start)}`,
   ]
   if (speakers.length) lines.push(`- Speakers: ${speakers.join(", ")}`)
-  if (session.audio && session.audio.chunks) lines.push(`- Audio backup: ${fileBase(session)}.webm (timestamps below match it)`)
+  if (session.audio && session.audio.chunks) {
+    const file = opts.audioFile === undefined ? `${fileBase(session)}.webm` : opts.audioFile
+    lines.push(file ? `- Audio backup: ${file} (timestamps below match it)` : "- Audio backup: not saved")
+  }
   if (session.url) lines.push(`- Link: ${session.url}`)
   if (ts.some((t) => t.estimated)) lines.push("- Times marked ~ are estimates: those captions reached the page in a batch, not live.")
   lines.push("", "---", "")

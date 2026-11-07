@@ -48,3 +48,12 @@ test("transcript markdown", () => {
   assert.match(md, /Audio backup: 2026-11-04_1605_Slack-huddle_design\.webm/)
   assert.match(md, /\*\*Sahaj\*\* `00:00:05`\nHello/)
 })
+
+test("the audio line names the file that was actually saved (lifecycle F9)", () => {
+  const s = { platformName: "Slack huddle", title: "#design", startedAt: start, endedAt: start + 65000, audio: { chunks: 3 }, utterances: [] }
+  assert.match(formatTranscript(s, { audioFile: "2026-11-04_1605_Slack-huddle_design_ab3cd (1).ogg" }),
+    /^- Audio backup: 2026-11-04_1605_Slack-huddle_design_ab3cd \(1\)\.ogg \(timestamps below match it\)$/m)
+  const none = formatTranscript(s, { audioFile: null })
+  assert.match(none, /^- Audio backup: not saved$/m)
+  assert.doesNotMatch(none, /\.webm/)
+})

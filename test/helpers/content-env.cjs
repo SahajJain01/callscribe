@@ -78,10 +78,17 @@ function createContent(opts = {}) {
   const store = { settings: { recordAudio: true, includeMic: true, autoCaptions: false, hideCaptions: false, showOverlay: true, ...(opts.settings || {}) } }
   const runtime = {
     id: "extid",
+    reply: opts.reply,
     sendMessage(msg) {
       if (runtime.throwSync) throw new Error("Extension context invalidated.")
       sent.push(msg)
-      return Promise.resolve({ ok: true })
+      // runtime.reply(msg): what the service worker answers (a value, a promise, or a throw = rejection).
+      if (!runtime.reply) return Promise.resolve({ ok: true })
+      try {
+        return Promise.resolve(runtime.reply(msg))
+      } catch (e) {
+        return Promise.reject(e)
+      }
     },
     onMessage: { addListener() {} },
   }
