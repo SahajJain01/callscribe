@@ -69,7 +69,11 @@ can't tell (for example, it can't find the mute button), your mic is not recorde
 The call is saved as it goes. If a call's tab stops answering for 2 minutes, or is gone
 after Chrome restarts, the call is ended at its last saved update. With auto-save on, its
 files are saved on the next check (when Chrome starts, or every 2 minutes). If saving was
-cut off halfway, it resumes where it stopped, and each file is saved once.
+cut off halfway, it resumes where it stopped, and each file is saved once. If the tab was
+only asleep (the laptop slept or Chrome froze the tab) and you're still in the call when it
+wakes, the rest of the call is still recorded. If the first part's files were already being
+saved, the rest becomes a new entry with its own files, and the first part's files are left
+as they were.
 
 If the extension is updated or reloaded during a call, the open tab stops recording and the
 overlay says "CallScribe was updated. Reload this tab to keep recording". Its captions and

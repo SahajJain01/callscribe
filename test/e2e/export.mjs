@@ -21,6 +21,9 @@
 //  9. A normal end stores the time the tab reported, not when the worker got to it.
 // 10. Restarting the worker doesn't push the sweep alarm back.
 // 11. A failed export is retried when its retry is due, not at the next 2-minute sweep.
+// 12. A call the worker finalised as stale (the tab was frozen past the probe) while the tab
+//     is still in it: once the tab wakes, the rest of the call is recorded into a new session
+//     and exported too; the first export is untouched and the new one holds only the rest.
 // Usage: node test/e2e/export.mjs   (CALLSCRIBE_EXT=<dir> loads the extension from elsewhere)
 import { spawn, execFileSync } from "node:child_process"
 import fs from "node:fs"
@@ -110,6 +113,7 @@ async function openTab() {
     sessionId,
     ask: (msg) => ev(`chrome.runtime.sendMessage(${JSON.stringify(msg)}).catch((e) => ({ rejected: String(e) }))`, ctx()),
     run: (expr) => ev(expr, ctx()),
+    page: (expr) => ev(expr), // the page's own (main) world
   }
 }
 const tab = await openTab()
@@ -424,6 +428,39 @@ const cancelNextDownload = () => swEval(`(() => { globalThis.__cancelNext = 1; i
   check(sweepAt && sweepAt - now() > 60000, `control: the next sweep is over a minute away (${sweepAt && Math.round((sweepAt - now()) / 1000)} s)`)
   const done = await waitFor(async () => { const s = await row(id); return s && s.export && s.export.state === "done" && s }, 20000)
   check(done && filesFor("retrydue").length === 1 && done.export.attempts === 2, `retried once, at its due time, well before the next sweep (${done ? Math.round((done.exportDoneAt - due) / 1000) + " s after due" : "not retried"})`)
+}
+
+// ---------- 12. a call finalised as stale while the tab is still in it keeps recording
+{
+  console.log("-- stale-finalised call carries on in a new session")
+  const tabC = await openTab()
+  const callRows = () => db(`(d, fin) => { const g = d.transaction("sessions").objectStore("sessions").getAll(); g.onsuccess = () => fin(g.result.filter((s) => /\\?manual/.test(s.url)).map((s) => ({ id: s.id, startedAt: s.startedAt, endedAt: s.endedAt, endReason: s.endReason, texts: (s.utterances || []).map((u) => u.text), chunks: s.audio ? s.audio.chunks : 0, export: s.export }))) }`)
+  const firstRow = async () => (await callRows()).sort((a, b) => a.startedAt - b.startedAt)[0]
+  await tabC.page(`window.__media().then(() => { window.__join(); caption("Alice Nguyen", "Before the laptop slept") ; return true })`)
+  const r1 = await waitFor(async () => { const r = await firstRow(); return r && r.texts.includes("Before the laptop slept") && r.chunks > 0 && r }, 20000)
+  check(r1, `control: the call is recording (${JSON.stringify(r1 && { texts: r1.texts, chunks: r1.chunks })})`)
+  const id1 = r1 && r1.id
+  // The laptop sleeps: the tab is frozen and misses the liveness probe; its last save looks old.
+  await send("Page.setWebLifecycleState", { state: "frozen" }, tabC.sessionId)
+  await db(`(d, fin) => { const tx = d.transaction("sessions", "readwrite"); const st = tx.objectStore("sessions"); const g = st.get(${JSON.stringify(id1)}); g.onsuccess = () => { const r = g.result; r.updatedAt = Date.now() - 3 * 60 * 1000; st.put(r) }; tx.oncomplete = () => fin(true) }`)
+  await kickSweep()
+  const fin1 = await waitFor(async () => { const r = (await callRows()).find((x) => x.id === id1); return r && r.export && r.export.state === "done" && r }, 30000)
+  check(fin1 && fin1.endReason === "stale", `control: the frozen call was finalised as stale and exported (${JSON.stringify(fin1 && { endReason: fin1.endReason, state: fin1.export && fin1.export.state })})`)
+  // It wakes up mid-call and the call goes on.
+  await send("Page.setWebLifecycleState", { state: "active" }, tabC.sessionId)
+  await tabC.page(`(caption("Sahaj Jain", "After the laptop woke up"), true)`)
+  const r2 = await waitFor(async () => { const rs = (await callRows()).filter((x) => x.id !== id1); return rs.find((x) => x.texts.includes("After the laptop woke up") && x.chunks > 0) }, 30000)
+  check(r2, `the rest of the call is recorded into a new session (${JSON.stringify((await callRows()).map((x) => ({ id: x.id, texts: x.texts, chunks: x.chunks, ended: Boolean(x.endedAt) })))})`)
+  check(r2 && !r2.texts.includes("Before the laptop slept"), `the new session holds only the rest of the call (${r2 && JSON.stringify(r2.texts)})`)
+  check(await tabC.page(`Boolean(document.querySelector("[data-callscribe-overlay], #callscribe-overlay"))`), "the overlay still shows the call")
+  await tabC.page(`(window.__leave(), true)`)
+  const fin2 = r2 && await waitFor(async () => { const r = (await callRows()).find((x) => x.id === r2.id); return r && r.export && r.export.state === "done" && r }, 30000)
+  check(fin2 && fin2.endReason === "left", `the new session is exported when the call is left (${JSON.stringify(fin2 && { endReason: fin2.endReason, files: fin2.export.files })})`)
+  const text = (r) => { const f = r && r.export.files.transcript; return f && f.filename && fs.existsSync(path.join(outDir, f.filename)) ? fs.readFileSync(path.join(outDir, f.filename), "utf8") : "" }
+  const t1 = text(fin1), t2 = text(fin2)
+  check(t1.includes("Before the laptop slept") && !t1.includes("After the laptop woke up"), "the first export is untouched: it has the call up to the sleep only")
+  check(t2.includes("After the laptop woke up") && !t2.includes("Before the laptop slept"), "the second export has the rest of the call")
+  check(fin2 && fin2.export.files.audio && fin2.export.files.audio.state === "complete", "the rest of the call's audio is exported too")
 }
 
 await send("Browser.close").catch(() => {})

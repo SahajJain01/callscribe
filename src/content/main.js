@@ -15,9 +15,12 @@
 // with backoff, a session's writes wait until its session-start is stored, and session-end is
 // sent only once every earlier write settled, so the last chunk is stored before export.
 // Audio or a transcript save that still can't be stored shows as "save failed" in the overlay.
-// A refusal the worker marks closed (the user deleted the live call in the popup, or it was
-// already finalised as stale) is final for the whole session: the tab stops sending for it,
-// stops its recorder and ends it quietly, and doesn't record that call again until it is left.
+// A refusal the worker marks closed is final for the whole session: the tab stops sending for it
+// and stops its recorder. closed "deleted" (the user deleted the live call in the popup): the
+// session ends quietly and that call isn't recorded again until it is left. closed "finalized"
+// (the worker already ended it as stale, e.g. while the laptop slept or the tab was frozen):
+// the rest of the call goes on in a new session with its own recorder; its transcript holds
+// what the first session hadn't stored (see save), and the overlay keeps the call's clock.
 //
 // After the extension is updated or reloaded, this script is orphaned (chrome.runtime.id is
 // gone, sendMessage throws). It then stops the recorder and render keepalive, drops the
@@ -42,7 +45,8 @@
   const RETRY_MS = [500, 1000, 2000, 4000, 8000] // then give up on that write (~15 s)
 
   let settings = { recordAudio: true, includeMic: true, autoCaptions: true, hideCaptions: true, showOverlay: true }
-  // { id, tracker, utterances, startedAt, lastInCall, captionsTried, savedAt, audio, lastCaptionAt, rec: { paused, includeMic, acked } | null }
+  // { id, tracker, utterances, startedAt, callStartedAt, lastInCall, captionsTried, savedAt, audio, lastCaptionAt,
+  //   rec: { paused, includeMic, acked } | null, stored (last transcript the worker stored), skip (lines an earlier session of the call stored) }
   let session = null
   let readTimer = 0
   let lastMuted
@@ -105,7 +109,7 @@
   // Per-session outbox: nothing goes out before session-start is stored.
   function newBox(s, startMsg) {
     const box = { ready: false, waiting: [], pending: new Set() }
-    box.started = deliver(startMsg, (r) => r.closed && sessionGone(s)).then(() => {
+    box.started = deliver(startMsg, (r) => r.closed && sessionGone(s, r.closed)).then(() => {
       box.ready = true
       for (const [m, f, ok] of box.waiting.splice(0)) post(s, m, f, ok)
     })
@@ -116,7 +120,7 @@
     if (s.closed) return
     const box = s.box
     if (!box.ready) return void box.waiting.push([msg, onFail, onOk])
-    const p = deliver(msg, (r) => (r.closed ? sessionGone(s) : onFail && onFail(r)))
+    const p = deliver(msg, (r) => (r.closed ? sessionGone(s, r.closed) : onFail && onFail(r)))
     box.pending.add(p)
     p.then((stored) => {
       box.pending.delete(p)
@@ -136,19 +140,27 @@
     s.transcriptSaveFailed = failed
     if (session === s) syncOverlay()
   }
-  // The worker refused the session for good. Nothing more is sent for it; if it is the live
-  // one it ends here without a session-end (the worker has nothing to finalise), with no
-  // "save failed" for a call the user deleted, and the same call isn't picked up again.
-  function sessionGone(s) {
+  // The worker refused the session for good. Nothing more is sent for it and, if it is the live
+  // one, its recorder stops; it gets no session-end (the worker has nothing to finalise).
+  // "finalized" (ended as stale while this tab was still in the call): the call carries on in a
+  // new session. Otherwise (deleted): the session ends here with no "save failed", and the
+  // same call isn't picked up again.
+  function sessionGone(s, why) {
     if (s.closed) return
     s.closed = true
     s.box.waiting.length = 0
     if (session !== s) return
+    if (s.rec) toPage({ type: "stop", id: s.id })
+    // A session-start the worker never stored can't have been finalised: never loop on one.
+    if (why === "finalized" && s.box.ready && !orphaned) {
+      session = null
+      startSession(s)
+      return syncOverlay()
+    }
     session = null
     refusedAt = Date.now()
     names.clear()
     stopCapture()
-    if (s.rec) toPage({ type: "stop", id: s.id })
     syncOverlay()
   }
 
@@ -252,7 +264,7 @@
     const rec = session.rec
     return {
       platform: adapter.id,
-      startedAt: session.startedAt,
+      startedAt: session.callStartedAt,
       source: streamActive() ? "feed" : captionsOn() ? "cc" : "none",
       audio: session.audioSaveFailed ? "save-failed" : session.audio,
       transcript: session.transcriptSaveFailed ? "save-failed" : "ok",
@@ -372,11 +384,22 @@
     return true
   }
 
-  function startSession() {
+  // A line's identity across sessions of one call (see save).
+  const lineKey = (u) => `${u.device || u.speaker}\u0000${u.start}\u0000${u.text}`
+
+  // prev: the session of this call the worker already finalised (sessionGone). The new one
+  // carries on with its caption state, so nothing said meanwhile is lost and the lines on
+  // screen aren't read again, and skips what prev (and those before it) stored. It isn't
+  // counted against the per-tab session limit: it is the same call, and the worker only
+  // finalises a live call after it missed the liveness probe (at most once per sweep).
+  function startSession(prev) {
     const id = `${adapter.id}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+    const now = Date.now()
     session = {
-      id, tracker: new CS.CaptionTracker(), utterances: new CS.UtteranceTracker(), startedAt: Date.now(), lastInCall: Date.now(), captionsTried: 0, savedAt: 0,
-      audio: "off", lastCaptionAt: 0, rec: null, rev: 0, audioSaveFailed: false, transcriptSaveFailed: false, closed: false,
+      id, tracker: prev ? prev.tracker : new CS.CaptionTracker(), utterances: prev ? prev.utterances : new CS.UtteranceTracker(),
+      startedAt: now, callStartedAt: prev ? prev.callStartedAt : now, lastInCall: prev ? prev.lastInCall : now, captionsTried: prev ? prev.captionsTried : 0, savedAt: 0,
+      audio: "off", lastCaptionAt: prev ? prev.lastCaptionAt : 0, rec: null, rev: 0, audioSaveFailed: false, transcriptSaveFailed: false, closed: false,
+      stored: null, storedRev: 0, skip: prev ? new Set([...(prev.skip || []), ...(prev.stored || []).map(lineKey)]) : null,
     }
     names.forEach((name, speaker) => session.utterances.setName(speaker, name))
     session.box = newBox(session, {
@@ -384,6 +407,8 @@
       session: { id, platform: adapter.id, platformName: adapter.name, title: adapter.title(), url: location.href, startedAt: session.startedAt },
     })
     if (orphaned) return
+    // Carrying a call on: the caption feed, observer, keepalive and mic gate are still running.
+    if (prev) return reconcileRecorder()
     lastMuted = undefined
     syncMute()
     watchMute(true)
@@ -403,7 +428,10 @@
       if (adapter.inCall()) s.title = adapter.title() || s.title
     } catch {}
     // The caption feed plus every on-page caption it doesn't already hold (transcript C1 / lifecycle F8).
-    const utterances = CS.mergeSources(s.utterances.snapshot(), s.tracker.snapshot())
+    // A session carrying a finalised call on leaves out the lines that one stored: the remainder
+    // only. A line stored while still being spoken is sent again in full (overlap, never a gap).
+    let utterances = CS.mergeSources(s.utterances.snapshot(), s.tracker.snapshot())
+    if (s.skip) utterances = utterances.filter((u) => !s.skip.has(lineKey(u)))
     // rev: a retried older snapshot never overwrites a newer one. A save that keeps failing
     // is redone from the latest state on the next heartbeat; one refused outright (fatal) is
     // not resent before the usual 15 s. Either way the overlay says the transcript isn't saved.
@@ -414,7 +442,13 @@
         s.utterances.dirty = true
       }
       transcriptSaveFailed(s, true)
-    }, () => transcriptSaveFailed(s, false))
+    }, () => {
+      if (msg.rev > s.storedRev) {
+        s.stored = utterances
+        s.storedRev = msg.rev
+      }
+      transcriptSaveFailed(s, false)
+    })
   }
 
   // Everything in the page that belongs to the live session: captions, keepalive, mic gate.

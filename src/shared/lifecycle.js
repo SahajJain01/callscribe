@@ -244,13 +244,14 @@ export function singleFlight(fn) {
 /** Whether to store an audio chunk. { ok } or { error, fatal } (fatal: the tab must not retry). */
 export function acceptChunk(s, { tabId, seq, size, mime, now }, { tombstone } = {}) {
   const no = (error) => ({ error, fatal: true })
-  // closed: nothing more for this session will be taken from this tab (the tab ends it).
-  const gone = (error) => ({ error, fatal: true, closed: true })
+  // closed: nothing more for this session will be taken from this tab. "deleted": the tab stops
+  // recording that call; "finalized" (already ended, e.g. as stale): it carries on in a new session.
+  const gone = (error, closed = "deleted") => ({ error, fatal: true, closed })
   if (tombstone) return gone("session deleted")
   if (!s) return gone("no such session")
   if (s.tabId !== tabId) return gone("session belongs to another tab")
   const st = s.export && s.export.state
-  if (st === "running" || st === "done" || st === "failed" || st === "canceled") return gone("session closed")
+  if (st === "running" || st === "done" || st === "failed" || st === "canceled") return gone("session closed", "finalized")
   if (!Number.isInteger(seq) || seq < 0 || seq > 1e7) return no("bad seq")
   if (!Number.isInteger(size) || size <= 0 || size > MAX_CHUNK_BYTES) return no("bad chunk size")
   if (typeof mime !== "string" || !AUDIO_MIME.test(mime)) return no("bad mime")

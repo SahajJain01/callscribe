@@ -436,7 +436,7 @@ test("merged overlay lines follow every change: new text, finality, names, page 
 })
 
 // ---- final review M-A: a final refusal for the whole session ends it quietly in the tab
-const GONE = { error: "no such session", fatal: true, closed: true }
+const GONE = { error: "session deleted", fatal: true, closed: "deleted" }
 
 test("the worker says the live call is gone (deleted in the popup): no more saves or audio, no 'save failed' (final review M-A)", async () => {
   let deleted = false
@@ -470,8 +470,8 @@ test("the worker says the live call is gone (deleted in the popup): no more save
   assert.equal(c.ofType(c.sent, "session-start").length, 2, "the next call wasn't recorded")
 })
 
-test("a final refusal of one audio chunk ends the session too when it says the call is closed (stale-finalised, M-A)", async () => {
-  const { c, id } = await joined({ reply: (m) => (m.type === "audio-chunk" ? { error: "session closed", fatal: true, closed: true } : { ok: true }) })
+test("a final refusal of one audio chunk for a deleted call ends the session too (M-A)", async () => {
+  const { c, id } = await joined({ reply: (m) => (m.type === "audio-chunk" ? GONE : { ok: true }) })
   c.fromPage({ type: "started", id })
   c.fromPage(chunkMsg(id, 0))
   await c.flush()
@@ -479,6 +479,82 @@ test("a final refusal of one audio chunk ends the session too when it says the c
   for (let i = 0; i < 20; i++) { c.advance(1000); await c.flush() }
   assert.equal(c.ofType(c.sent, "session-update").length, updates)
   assert.deepEqual(c.ofType(c.toPage, "stop").map((m) => m.id), [id])
+  assert.equal(c.ofType(c.sent, "session-start").length, 1)
+})
+
+// ---- a call the worker already finalised as stale (the tab was frozen or the laptop slept) keeps
+// recording into a new session; only what the first session didn't store goes into the new one.
+const FINALIZED = { error: "session closed", fatal: true, closed: "finalized" }
+const final = (id, text, device = "d1") => ({ id, version: 1, text, device, final: true })
+async function finalisedMidCall(opts = {}) {
+  const f = feedAdapter()
+  let finalized = false
+  const { c, id } = await joined({ adapter: f.adapter, reply: (m) => (finalized && m.id === id && m.type === (opts.on || "session-update") ? FINALIZED : { ok: true }), ...opts.join })
+  f.hooks.state = c.state
+  c.state.feed = true
+  c.fromPage({ type: "started", id })
+  f.hooks.onUtterance(final(1, "stored before the sleep"))
+  for (let i = 0; i < 4; i++) { c.advance(1000); await c.flush() }
+  assert.ok(c.ofType(c.sent, "session-update").some((m) => m.id === id && m.utterances.some((u) => u.text === "stored before the sleep")), "control: saved in the first session")
+  finalized = true
+  f.hooks.onUtterance(final(2, "said while the worker finalised it"))
+  if (opts.on === "audio-chunk") c.fromPage(chunkMsg(id, 0))
+  for (let i = 0; i < 6; i++) { c.advance(1000); await c.flush() }
+  return { c, f, id }
+}
+
+test("a call finalised as stale while the tab still records it carries on in a new session: new id, new recorder, overlay stays", async () => {
+  const { c, f, id } = await finalisedMidCall()
+  const starts = c.ofType(c.sent, "session-start")
+  assert.equal(starts.length, 2, "no new session for the rest of the call")
+  const id2 = starts[1].session.id
+  assert.notEqual(id2, id)
+  assert.deepEqual(c.ofType(c.toPage, "stop").map((m) => m.id), [id], "the first recorder was not stopped")
+  assert.deepEqual(c.ofType(c.toPage, "start").map((m) => m.id), [id, id2], "no recorder for the new session")
+  assert.equal(c.ofType(c.sent, "session-end").length, 0, "session-end sent for the finalised session")
+  const ov = c.overlays.at(-1)
+  assert.equal(c.overlays.length, 1)
+  assert.ok(!ov.removed, "the overlay was removed although the call is still recorded")
+  assert.equal(ov.updates.at(-1).startedAt, ov.updates[0].startedAt, "the overlay's call clock restarted")
+  assert.ok(!ov.updates.some((u) => u.transcript === "save-failed"), "'save failed' shown although nothing was lost")
+  // The rest of the call: lines the first session never stored, and new ones; not the stored ones.
+  f.hooks.onUtterance(final(3, "after the wake"))
+  c.fromPage({ type: "started", id: id2 })
+  c.fromPage(chunkMsg(id2, 0))
+  for (let i = 0; i < 4; i++) { c.advance(1000); await c.flush() }
+  const texts = c.ofType(c.sent, "session-update").filter((m) => m.id === id2).at(-1).utterances.map((u) => u.text)
+  assert.deepEqual(texts, ["said while the worker finalised it", "after the wake"], "the new session's transcript isn't the remainder")
+  assert.deepEqual(c.ofType(c.sent, "audio-chunk").filter((m) => m.id === id2).map((m) => m.seq), [0], "the new recorder's audio isn't sent")
+  await leave(c)
+  c.advance(7000) // no 'stopped' from this fake page: session-end goes after the stop timeout
+  await c.flush()
+  assert.deepEqual(c.ofType(c.sent, "session-end").map((m) => m.id), [id2])
+})
+
+test("a refused audio chunk of a call finalised as stale also carries on in a new session", async () => {
+  const { c, id } = await finalisedMidCall({ on: "audio-chunk" })
+  const starts = c.ofType(c.sent, "session-start")
+  assert.equal(starts.length, 2)
+  assert.deepEqual(c.ofType(c.toPage, "stop").map((m) => m.id), [id])
+})
+
+test("the per-tab session limit doesn't block carrying on a finalised call", async () => {
+  const f = feedAdapter()
+  let finalized = false
+  let live = null
+  const c = createContent({ adapter: f.adapter, reply: (m) => (finalized && m.id === live ? FINALIZED : { ok: true }) })
+  await c.flush()
+  for (let i = 0; i < 6; i++) { // six calls in a few minutes: the most a tab may start in 10 minutes
+    c.state.inCall = true
+    c.advance(1000)
+    await c.flush()
+    if (i < 5) await leave(c)
+  }
+  assert.equal(c.ofType(c.sent, "session-start").length, 6, "control: six sessions")
+  live = c.ofType(c.sent, "session-start").at(-1).session.id
+  finalized = true
+  for (let i = 0; i < 20; i++) { c.advance(1000); await c.flush() }
+  assert.equal(c.ofType(c.sent, "session-start").length, 7, "the rest of the call was blocked by the session limit")
 })
 
 test("a fatal refusal of one transcript save that doesn't close the call isn't resent every heartbeat (M-A)", async () => {

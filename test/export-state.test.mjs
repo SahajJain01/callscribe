@@ -288,10 +288,12 @@ test("a late chunk is still taken after the call ended, until its audio export s
   for (const state of ["running", "done", "failed"]) assert.equal(L.acceptChunk(ended({}, { state }), chunk()).fatal, true, state)
 })
 test("refusals that end the whole call for the tab say so (closed); per-chunk ones don't (final review M-A)", () => {
-  assert.equal(L.acceptChunk(undefined, chunk()).closed, true)
-  assert.equal(L.acceptChunk(undefined, chunk(), { tombstone: true }).closed, true)
-  assert.equal(L.acceptChunk(live(), chunk({ tabId: 8 })).closed, true)
-  for (const state of ["running", "done", "failed", "canceled"]) assert.equal(L.acceptChunk(ended({}, { state }), chunk()).closed, true, state)
+  // deleted: the user deleted it (or it's unknown / another tab's): the tab stops for good.
+  // finalized: the worker already ended it (stale); the tab carries the call on in a new session.
+  assert.equal(L.acceptChunk(undefined, chunk()).closed, "deleted")
+  assert.equal(L.acceptChunk(undefined, chunk(), { tombstone: true }).closed, "deleted")
+  assert.equal(L.acceptChunk(live(), chunk({ tabId: 8 })).closed, "deleted")
+  for (const state of ["running", "done", "failed", "canceled"]) assert.equal(L.acceptChunk(ended({}, { state }), chunk()).closed, "finalized", state)
   assert.equal(L.acceptChunk(live(), chunk({ size: 0 })).closed, undefined)
   assert.equal(L.acceptChunk(live(), chunk({ mime: "text/html" })).closed, undefined)
   assert.equal(L.acceptChunk(live({ audio: { chunks: 100, bytes: 50 * 1024 * 1024 } }), chunk({ now: start + 60 * 1000 })).closed, undefined)
