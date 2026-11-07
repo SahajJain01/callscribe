@@ -189,6 +189,8 @@
     name: "Google Meet",
     matches: (loc) => loc.hostname === "meet.google.com",
     captionContainer: '[role="region"][aria-label="Captions"]',
+    // The element main.js watches for caption changes (also found in non-English UIs).
+    captionRoot: captionRegion,
     createCaptionStream,
     participantNames,
 

@@ -60,6 +60,8 @@ function createContent(opts = {}) {
   Object.assign(doc, {
     body: { nodeName: "BODY" }, head: { appendChild() {} }, documentElement: { appendChild() {} },
     getElementById: () => null, createElement: () => ({ remove() {} }), title: "Huddle",
+    // state.container: the caption container element, once the page shows captions.
+    querySelector: (sel) => (state.container && sel && sel === adapter.captionContainer ? state.container : null),
   })
   const win = new EventTarget()
   win.postMessage = () => { throw new Error("main.js must not use window.postMessage") }

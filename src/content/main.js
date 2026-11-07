@@ -199,8 +199,25 @@
   // can never affect capture or saving.
   let overlay = null
   let overlayTimer = 0
+  // The merged transcript is re-merged only when either source's view changed (merging
+  // 2,000 + 2,000 lines costs milliseconds; comparing the views is a cheap scan). The
+  // overlay then gets the same array back and skips its transcript work.
+  let linesMemo = null
+  const sameLine = (a, b) => a.text === b.text && a.speaker === b.speaker && a.live === b.live && a.start === b.start && a.end === b.end && a.device === b.device
+  function sameView(a, b) {
+    if (a.length !== b.length) return false
+    for (let i = a.length - 1; i >= 0; i--) if (!sameLine(a[i], b[i])) return false
+    return true
+  }
+  function overlayLines(s) {
+    const feed = s.utterances.view()
+    const page = s.tracker.view()
+    const m = linesMemo
+    if (m && m.s === s && sameView(m.feed, feed) && sameView(m.page, page)) return m.lines
+    linesMemo = { s, feed, page, lines: CS.mergeSources(feed, page) }
+    return linesMemo.lines
+  }
   function overlayState() {
-    const feed = session.utterances.view()
     const rec = session.rec
     return {
       platform: adapter.id,
@@ -209,7 +226,7 @@
       audio: session.audioSaveFailed ? "save-failed" : session.audio,
       micMuted: lastMuted,
       micRecorded: Boolean(rec && !rec.paused && rec.includeMic),
-      lines: CS.mergeSources(feed, session.tracker.view()),
+      lines: overlayLines(session),
       lastCaptionAt: session.lastCaptionAt,
       canHideCaptions: Boolean(adapter.captionContainer),
       captionsHidden: settings.hideCaptions !== false,
@@ -229,8 +246,12 @@
     overlay = null
   }
   function syncOverlay() {
+    // One refresh path: a refresh now makes a pending scheduled one redundant.
+    clearTimeout(overlayTimer)
+    overlayTimer = 0
     try {
       if (orphaned) return
+      if (!session) linesMemo = null
       if (!session || settings.showOverlay === false) return removeOverlay()
       if (!overlay) overlay = CS.createOverlay({ doc: document, storage: chrome.storage.local, onToggleCaptions: setCaptionsHidden })
       overlay.update(overlayState())
@@ -364,7 +385,7 @@
     try {
       stream && stream.stop()
     } catch {}
-    observer && observer.disconnect()
+    unobserve()
     watchMute(false)
     clearTimeout(readTimer)
     readTimer = 0
@@ -417,7 +438,9 @@
     syncOrphanOverlay()
   }
 
-  function readCaptions() {
+  // Reads the captions drawn on the page. refresh: also schedule an overlay refresh (the
+  // heartbeat refreshes the overlay itself right after, so it passes false).
+  function readCaptions(refresh = true) {
     if (!session) return
     const wasDirty = session.tracker.dirty
     try {
@@ -426,13 +449,33 @@
       console.debug("[CallScribe] caption read failed", e)
     }
     if (session.tracker.dirty && !wasDirty) session.lastCaptionAt = Date.now()
-    scheduleOverlay()
+    if (refresh) scheduleOverlay()
   }
 
-  // Captions change many times a second; read at most every 250 ms.
+  // Captions change many times a second; read at most every 250 ms. Only the caption
+  // container is watched, once the page shows it (the heartbeat looks for it every second
+  // and follows it when the app replaces it); the rest of the call UI never queues a read.
   let observer = null
-  function observe() {
+  let observed = null
+  function captionRoot() {
+    try {
+      if (adapter.captionRoot) return adapter.captionRoot() || null
+      return adapter.captionContainer ? document.querySelector(adapter.captionContainer) : null
+    } catch {
+      return null
+    }
+  }
+  function unobserve() {
     observer && observer.disconnect()
+    observer = null
+    observed = null
+  }
+  function observe() {
+    const root = captionRoot()
+    if (root === observed && observer) return
+    unobserve()
+    if (!root) return
+    observed = root
     observer = new MutationObserver(() => {
       if (readTimer) return
       readTimer = setTimeout(() => {
@@ -440,7 +483,7 @@
         readCaptions()
       }, 250)
     })
-    observer.observe(document.body, { childList: true, subtree: true, characterData: true })
+    observer.observe(root, { childList: true, subtree: true, characterData: true })
   }
 
   // MAIN world -> extension, over the private channel only.
@@ -525,7 +568,10 @@
         adapter.enableCaptions()
       }
     }
-    readCaptions()
+    // Page captions: the container observer reads them as they change. The heartbeat also
+    // polls them as the fallback, but not while the caption feed is healthy (CC is off then).
+    observe()
+    if (!streamActive()) readCaptions(false)
     reclaimSpace()
     if (session && Date.now() - session.savedAt >= SAVE_EVERY_MS) save(session, false)
     // Every second regardless of dirty: the elapsed time ticks and live lines turn final.
@@ -544,7 +590,7 @@
           captionsOn: captionsOn(),
           hint: adapter.hints && adapter.hints.captionsOff,
           session: session
-            ? { id: session.id, lines: CS.mergeSources(session.utterances.view(), session.tracker.view()).length, startedAt: session.startedAt }
+            ? { id: session.id, lines: overlayLines(session).length, startedAt: session.startedAt }
             : null,
         })
       }

@@ -325,3 +325,112 @@ test("session-end carries when the call was last seen, not when the end was noti
   assert.ok(end, "no session-end")
   assert.equal(end.at, lastSeen)
 })
+
+// --- runtime "Body observer and heartbeat duplication" and I3 (overlay refresh cost)
+
+// A Meet-like caption feed the test drives: state.feed says whether it is healthy.
+function feedAdapter(extra = {}) {
+  const hooks = {}
+  const reads = { n: 0 }
+  return {
+    hooks,
+    reads,
+    adapter: {
+      captionContainer: ".captions",
+      captionRows: () => { reads.n++; return hooks.rows ? hooks.rows() : [] },
+      createCaptionStream(cb) {
+        Object.assign(hooks, cb)
+        return { active: () => Boolean(hooks.state && hooks.state.feed), start() {}, stop() {}, tick() {}, handle() {} }
+      },
+      ...extra,
+    },
+  }
+}
+const childObservers = (c) => c.observers.filter((o) => o.connected && o.targets.some((t) => t.o && (t.o.childList || t.o.characterData)))
+
+test("the caption observer watches the caption container once it is on the page, never all of document.body", async () => {
+  const f = feedAdapter()
+  const { c } = await joined({ adapter: f.adapter })
+  f.hooks.state = c.state
+  assert.deepEqual(childObservers(c).filter((o) => o.targets.some((t) => t.target === c.doc.body)), [], "observing document.body")
+  const container = { nodeName: "DIV", isConnected: true }
+  c.state.container = container
+  c.advance(1000)
+  const obs = childObservers(c)
+  assert.equal(obs.length, 1)
+  assert.equal(obs[0].targets.at(-1).target, container)
+  // A mutation in it schedules a read.
+  c.state.feed = true // feed healthy: only the observer reads
+  c.advance(1000)
+  const before = f.reads.n
+  obs[0].fire()
+  c.advance(300)
+  assert.equal(f.reads.n, before + 1)
+  // The container is replaced: the observer moves to the new one.
+  const next = { nodeName: "DIV", isConnected: true }
+  container.isConnected = false
+  c.state.container = next
+  c.advance(1000)
+  assert.deepEqual(childObservers(c).map((o) => o.targets.at(-1).target), [next])
+})
+
+test("while the caption feed is healthy the heartbeat doesn't poll page captions; it does when the feed is down", async () => {
+  const f = feedAdapter()
+  const { c } = await joined({ adapter: f.adapter })
+  f.hooks.state = c.state
+  c.state.feed = true
+  c.advance(1000)
+  let n = f.reads.n
+  c.advance(5000)
+  assert.equal(f.reads.n, n, "page captions polled while the feed is healthy")
+  c.state.feed = false
+  n = f.reads.n
+  c.advance(5000)
+  assert.ok(f.reads.n - n >= 4, `fallback polling stopped (${f.reads.n - n} reads in 5 s)`)
+})
+
+test("a quiet heartbeat refreshes the overlay once, reusing the merged lines", async () => {
+  const f = feedAdapter()
+  const { c } = await joined({ adapter: f.adapter })
+  f.hooks.state = c.state
+  c.state.feed = true
+  f.hooks.onUtterance({ id: 1, version: 1, text: "hello there", device: "d1", final: true })
+  c.advance(2000)
+  const ov = c.overlays.at(-1)
+  const n = ov.updates.length
+  c.advance(3000)
+  assert.equal(ov.updates.length - n, 3, `${ov.updates.length - n} overlay refreshes in 3 quiet seconds`)
+  const ls = ov.updates.slice(n).map((u) => u.lines)
+  assert.ok(ls.every((l) => l === ls[0]), "lines re-merged although nothing changed")
+  assert.equal(ls[0].length, 1)
+})
+
+test("merged overlay lines follow every change: new text, finality, names, page rows", async () => {
+  const f = feedAdapter()
+  const { c } = await joined({ adapter: f.adapter })
+  f.hooks.state = c.state
+  c.state.feed = true
+  const last = () => c.overlays.at(-1).updates.at(-1).lines
+  f.hooks.onUtterance({ id: 1, version: 1, text: "hello", device: "d1", final: false })
+  c.advance(1000)
+  assert.deepEqual(last().map((l) => [l.text, l.live]), [["hello", true]])
+  f.hooks.onUtterance({ id: 1, version: 2, text: "hello", device: "d1", final: true })
+  c.advance(1000)
+  assert.deepEqual(last().map((l) => [l.text, l.live]), [["hello", false]], "finality change not shown")
+  f.hooks.onName("d1", "Priya")
+  c.advance(1000)
+  assert.equal(last()[0].speaker, "Priya", "late name not shown")
+  // CC on: a page row the feed doesn't hold joins the transcript, then turns final when it goes.
+  const container = { nodeName: "DIV", isConnected: true }
+  c.state.container = container
+  c.advance(1000)
+  const row = { key: {}, speaker: "Sam", text: "a completely different page caption here" }
+  f.hooks.rows = () => [row]
+  childObservers(c)[0].fire()
+  c.advance(1000)
+  assert.deepEqual(last().map((l) => [l.text, l.live]), [["hello", false], [row.text, true]])
+  f.hooks.rows = () => []
+  childObservers(c)[0].fire()
+  c.advance(1000)
+  assert.deepEqual(last().map((l) => [l.text, l.live]), [["hello", false], [row.text, false]], "page row stayed live")
+})
