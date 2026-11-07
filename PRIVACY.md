@@ -10,8 +10,10 @@ handles and where that data goes.
 
 While you are in a call on meet.google.com or app.slack.com, CallScribe reads:
 
-- **Caption text** that Google Meet or Slack shows on the page, with the speaker names
-  attached to it.
+- **Caption text** with the speaker names attached to it: in Google Meet, the live captions
+  Meet's own servers send to your browser during the call (CallScribe asks Meet for them the
+  same way Meet's CC button does); in Slack, the captions shown on the page.
+  Participant names come from the call page.
 - **Call audio**: the audio of the other participants that your browser already receives,
   and your own microphone while you are unmuted in the call.
 - **Call details**: the meeting or huddle title, the page address, and start/end times.

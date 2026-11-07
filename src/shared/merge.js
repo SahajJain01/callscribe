@@ -169,7 +169,59 @@
     }
   }
 
-  const api = { mergeText, CaptionTracker, norm }
+  /**
+   * Utterances from a structured caption stream (Meet's captions_v2 channel), where every update
+   * carries an utterance's whole current text and a version. No text merging is needed: the
+   * highest version wins. Timed by arrival; speakers are device ids, named at snapshot time.
+   * u: { id, version, text, final, device, epoch } (epoch separates resubscriptions, which may
+   * reuse ids).
+   */
+  class UtteranceTracker {
+    constructor(now = () => Date.now()) {
+      this.now = now
+      this.entries = []
+      this.byKey = new Map()
+      this.names = new Map()
+      this.dirty = false
+    }
+
+    add(u, t = this.now()) {
+      const text = norm(u.text)
+      const key = `${u.epoch || 0}|${u.device}|${u.id}`
+      const e = this.byKey.get(key)
+      if (e) {
+        if (u.version < e.version) return
+        e.version = u.version
+        if (text && text !== e.text) {
+          e.text = text
+          e.end = t
+          this.dirty = true
+        }
+        return
+      }
+      if (!text) return
+      const entry = { device: u.device, text, start: t, end: t, version: u.version }
+      this.byKey.set(key, entry)
+      this.entries.push(entry)
+      this.dirty = true
+    }
+
+    setName(device, name) {
+      name = norm(name)
+      if (!device || !name || this.names.get(device) === name) return
+      this.names.set(device, name)
+      if (this.entries.some((e) => e.device === device)) this.dirty = true
+    }
+
+    snapshot() {
+      this.dirty = false
+      return this.entries
+        .filter((e) => e.text)
+        .map((e) => ({ speaker: this.names.get(e.device) || "Unknown", text: e.text, start: e.start, end: e.end }))
+    }
+  }
+
+  const api = { mergeText, CaptionTracker, UtteranceTracker, norm }
   root.CallScribe = Object.assign(root.CallScribe || {}, api)
   if (typeof module !== "undefined" && module.exports) module.exports = api
 })(typeof globalThis !== "undefined" ? globalThis : this)

@@ -11,7 +11,7 @@ CallScribe saves your Google Meet calls and Slack huddles as a written transcrip
 
 HOW IT WORKS
 • Join a call in Google Meet, or a huddle in the Slack web app (app.slack.com).
-• CallScribe turns on Meet's captions for you and keeps them hidden, so your screen stays clean. In Slack, turn on captions in the huddle once (or set Slack to show captions by default).
+• In Meet you don't need to turn captions on: CallScribe receives Meet's live captions in the background, so nothing covers your call. In Slack, turn on captions in the huddle once (or set Slack to show captions by default).
 • When the call ends, two files are saved to Downloads/CallScribe:
   – a Markdown transcript: who said what, with timestamps
   – a WebM audio recording of the call, on the same clock as the transcript
@@ -44,7 +44,7 @@ Save a transcript (from the platform's own live captions) and an audio backup of
 - downloads: Saves the finished transcript (.md) and audio (.webm) into the user's Downloads/CallScribe folder when a call ends or when the user clicks Transcript/Audio in the popup.
 - offscreen: The service worker can't create blob URLs. An offscreen document assembles the stored audio chunks into one file so it can be downloaded.
 - alarms: A periodic check finalizes and saves calls whose tab crashed or closed without a normal end.
-- Host permission meet.google.com and app.slack.com: The content scripts run only on these two call sites. They read the captions the site shows and record the call audio the browser already receives. No other sites are accessed.
+- Host permission meet.google.com and app.slack.com: The content scripts run only on these two call sites. They read the call's live captions (in Meet, the caption feed Meet's servers send to the browser, requested the same way Meet's CC button does; in Slack, the captions shown on the page) and record the call audio the browser already receives. No other sites are accessed.
 
 **Remote code:** No, I am not using remote code. All JavaScript ships in the package.
 

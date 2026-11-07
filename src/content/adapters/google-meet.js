@@ -1,5 +1,7 @@
-// Google Meet adapter. Reads the live captions panel Meet renders when CC is on.
-// Hooks verified against meet.google.com on 2026-11-04 (English UI; icon-name fallbacks are locale-free).
+// Google Meet adapter. Captions come from Meet's caption data channel with CC left off
+// (createCaptionStream); the captions panel Meet renders when CC is on is the fallback.
+// DOM hooks verified against meet.google.com on 2026-11-04 (English UI; icon-name fallbacks are
+// locale-free); caption channel verified 2026-11-07.
 ;(function () {
   "use strict"
   const CS = (globalThis.CallScribe = globalThis.CallScribe || {})
@@ -14,9 +16,152 @@
     )
   }
 
+  // Height of the band Meet sets aside for captions: the tallest box around the caption region,
+  // stopping at the full-page layout. Moving the region off-screen doesn't shrink this band.
+  function captionBandHeight(region) {
+    let band = 0
+    for (let e = region.parentElement; e && e !== document.body; e = e.parentElement) {
+      const h = e.getBoundingClientRect().height
+      if (h >= innerHeight * 0.6) break
+      band = Math.max(band, h)
+    }
+    return band
+  }
+
   function selfName() {
     const b = [...document.querySelectorAll("button[aria-label^='More options for ']")][0]
     return b ? b.getAttribute("aria-label").replace("More options for ", "").trim() : ""
+  }
+
+  async function gunzip(bytes) {
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"))
+    return new Uint8Array(await new Response(stream).arrayBuffer())
+  }
+  const isGzip = (b, at) => b.length > at + 2 && b[at] === 0x1f && b[at + 1] === 0x8b && b[at + 2] === 8
+
+  // The caption language to request when Meet hasn't requested one itself in this page.
+  function defaultLanguage() {
+    const l = navigator.language || ""
+    return /^[a-z]{2,3}-[A-Z]{2}$/.test(l) ? l : "en-US"
+  }
+
+  /**
+   * Captions straight from Meet's captions_v2 data channel (see src/shared/meet-proto.js),
+   * with CC left off: the page tap (src/page/meet-channels.js) forwards channel traffic here and
+   * sends the "captions on" request we build. Meet's own code keeps acknowledging updates.
+   * If the user turns CC off in Meet, that request stops the stream, so we ask again.
+   */
+  function createCaptionStream({ toPage, onUtterance, onName }) {
+    const P = CS.MeetProto
+    const OWN_SEQ = 100000 // far above Meet's own request numbers, so replies can't be confused
+    let seq = OWN_SEQ
+    let wanted = false
+    let open = false
+    let meetLang = null // last language Meet itself requested in this page ("" = CC off), null = none
+    let lastLang = "" // last non-empty language Meet used
+    let pending = 0 // seq of our request awaiting a reply
+    let sentAt = 0
+    let tries = 0
+    let flowing = false // the server is streaming captions to this page
+    let epoch = 0 // bumped whenever the stream restarts; utterance ids may restart with it
+    let lastCaptionAt = 0
+
+    function request() {
+      if (!wanted || !open || flowing || pending || tries >= 5) return
+      pending = ++seq
+      sentAt = Date.now()
+      tries++
+      const buf = P.encodeLanguage(pending, lastLang || defaultLanguage()).buffer
+      toPage({ type: "dc-send", label: "captions_v2", buf })
+    }
+
+    function stopped() {
+      if (flowing) epoch++
+      flowing = false
+      pending = 0
+    }
+
+    async function names(bytes) {
+      try {
+        if (isGzip(bytes, 0)) bytes = await gunzip(bytes)
+        else if (isGzip(bytes, 3)) bytes = await gunzip(bytes.subarray(3))
+        for (const [device, name] of P.findDeviceNames(bytes)) onName(device, name)
+      } catch {}
+    }
+
+    return {
+      handle(m) {
+        if (m.label === "collections") {
+          if (m.type === "dc-msg" && m.dir === "in") names(new Uint8Array(m.buf))
+          return
+        }
+        if (m.label !== "captions_v2") return
+        if (m.type === "dc-open") {
+          open = true
+          stopped()
+          tries = 0
+          request()
+        } else if (m.type === "dc-close") {
+          open = false
+          stopped()
+        } else if (m.type === "dc-sent") {
+          if (!m.ok) pending = 0
+        } else if (m.type === "dc-msg") {
+          const bytes = new Uint8Array(m.buf)
+          if (m.dir === "out") {
+            const d = P.decodeOutgoing(bytes)
+            if (!d || d.kind !== "language" || d.seq >= OWN_SEQ) return
+            meetLang = d.lang
+            if (d.lang) {
+              lastLang = d.lang
+              if (!flowing) epoch++
+              flowing = true
+            } else {
+              // Meet turned CC off, which stops the stream for this page too: ask again.
+              stopped()
+              tries = 0
+              setTimeout(request, 300)
+            }
+          } else {
+            const d = P.decodeIncoming(bytes)
+            if (!d) return
+            if (d.kind === "reply" && d.seq === pending) {
+              pending = 0
+              tries = 0
+              if (!flowing) epoch++
+              flowing = true
+            } else if (d.kind === "captions") {
+              lastCaptionAt = m.t
+              for (const u of d.utterances) onUtterance({ ...u, epoch }, m.t)
+            }
+          }
+        }
+      },
+      start() {
+        wanted = true
+        tries = 0
+        request()
+      },
+      stop() {
+        wanted = false
+      },
+      tick() {
+        if (pending && Date.now() - sentAt > 5000) pending = 0 // no reply: try again
+        request()
+      },
+      active: () => flowing || Date.now() - lastCaptionAt < 30000,
+    }
+  }
+
+  // Name on each participant tile, keyed by the same device id the caption stream uses.
+  function participantNames() {
+    const out = []
+    for (const tile of document.querySelectorAll("[data-participant-id]")) {
+      const id = tile.getAttribute("data-participant-id")
+      const span = [...tile.querySelectorAll("span.notranslate")].find((s) => !s.children.length && text(s))
+      if (id && span) out.push([id, text(span)])
+    }
+    return out
   }
 
   const adapter = {
@@ -24,6 +169,8 @@
     name: "Google Meet",
     matches: (loc) => loc.hostname === "meet.google.com",
     captionContainer: '[role="region"][aria-label="Captions"]',
+    createCaptionStream,
+    participantNames,
 
     inCall() {
       return Boolean(document.querySelector('button[aria-label="Leave call"]') || icon("call_end"))
@@ -56,6 +203,58 @@
         icon("closed_caption_off")?.closest("button")
       if (btn) btn.click()
       else document.dispatchEvent(new KeyboardEvent("keydown", { key: "c", code: "KeyC", bubbles: true }))
+    },
+
+    // While captions are on, Meet shrinks the video grid by a fixed caption band (the bottom of its
+    // inline `inset`) and lays tiles out for that smaller box. It never re-measures, so hiding the
+    // caption box leaves an empty gap. When hidden, scale and centre the tiles into the grid plus
+    // the band. Only tiles are transformed; the grid's other children are left alone.
+    reclaimCaptionSpace(hidden) {
+      const ATTR = "data-callscribe-tile"
+      const region = hidden ? captionRegion() : null
+      const band = region ? captionBandHeight(region) : 0
+      const want = new Map()
+      if (band) {
+        for (const g of document.querySelectorAll('[style*="inset"]')) {
+          if (!g.querySelector("[data-participant-id]")) continue
+          // offset* ignore transforms, so this is Meet's own layout even after we've moved tiles.
+          const tiles = [...g.children].filter(
+            (k) => k.offsetWidth && k.offsetHeight && (k.matches("[data-participant-id]") || k.querySelector("[data-participant-id]")),
+          )
+          if (!tiles.length) continue
+          const x0 = Math.min(...tiles.map((k) => k.offsetLeft))
+          const y0 = Math.min(...tiles.map((k) => k.offsetTop))
+          const bw = Math.max(...tiles.map((k) => k.offsetLeft + k.offsetWidth)) - x0
+          const bh = Math.max(...tiles.map((k) => k.offsetTop + k.offsetHeight)) - y0
+          const W = g.offsetWidth
+          const H = g.offsetHeight + band
+          const s = Math.max(1, Math.min(W / bw, H / bh))
+          const tx = (W - s * bw) / 2 - s * x0
+          const ty = (H - s * bh) / 2 - s * y0
+          const r = (n) => Math.round(n * 100) / 100
+          for (const k of tiles) {
+            const dx = tx + s * k.offsetLeft - k.offsetLeft
+            const dy = ty + s * k.offsetTop - k.offsetTop
+            want.set(k, `translate(${r(dx)}px, ${r(dy)}px) scale(${Math.round(s * 1000) / 1000})`)
+          }
+        }
+      }
+      for (const k of document.querySelectorAll(`[${ATTR}]`)) if (!want.has(k)) k.removeAttribute(ATTR)
+      const rules = []
+      let i = 0
+      for (const [k, t] of want) {
+        if (k.getAttribute(ATTR) !== String(i)) k.setAttribute(ATTR, String(i))
+        rules.push(`[${ATTR}="${i++}"] { transform-origin: 0 0 !important; transform: ${t} !important; }`)
+      }
+      const css = rules.join("\n")
+      let sheet = document.getElementById("callscribe-caption-space")
+      if (!css) return sheet && sheet.remove()
+      if (!sheet) {
+        sheet = document.createElement("style")
+        sheet.id = "callscribe-caption-space"
+        ;(document.head || document.documentElement).appendChild(sheet)
+      }
+      if (sheet.textContent !== css) sheet.textContent = css
     },
 
     captionRows() {

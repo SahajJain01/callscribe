@@ -16,7 +16,7 @@ const shim = `{
   runtime: { sendMessage(m) { (window.__csMsgs = window.__csMsgs || []).push(m); return Promise.resolve({ ok: true }) }, onMessage: { addListener() {} } },
   storage: { local: { get: () => Promise.resolve({ settings: { recordAudio: true, includeMic: true, autoCaptions: true, hideCaptions: true } }) }, onChanged: { addListener() {} } },
 }`
-const isolated = `(function (chrome) {\n${read("src/shared/merge.js")}\n${read("src/content/adapters/google-meet.js")}\n${read("src/content/main.js")}\n})(${shim})`
+const isolated = `(function (chrome) {\n${read("src/shared/merge.js")}\n${read("src/shared/meet-proto.js")}\n${read("src/content/adapters/google-meet.js")}\n${read("src/content/main.js")}\n})(${shim})`
 
 const ws = new WebSocket(`ws://127.0.0.1:9222/devtools/page/${targetId}`)
 let id = 0
@@ -45,7 +45,7 @@ await new Promise((r) => (ws.onopen = r))
 await send("Page.enable")
 await send("Emulation.setFocusEmulationEnabled", { enabled: true })
 await send("Page.startScreencast", { format: "jpeg", quality: 10, maxWidth: 320, maxHeight: 200 })
-const { result: { identifier } } = await send("Page.addScriptToEvaluateOnNewDocument", { source: read("src/page/audio-hook.js") })
+const { result: { identifier } } = await send("Page.addScriptToEvaluateOnNewDocument", { source: read("src/page/audio-hook.js") + "\n" + read("src/page/meet-channels.js") })
 await send("Page.navigate", { url: "https://meet.google.com/new" })
 for (let i = 0; i < 30; i++) {
   await sleep(1000)
