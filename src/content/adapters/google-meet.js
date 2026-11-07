@@ -35,9 +35,14 @@
     return null
   }
 
+  // Your name, from your tile's menu button. That button comes and goes with the layout, so the
+  // last name seen is kept: "You" captions stay under your name (transcript M4).
+  let lastSelfName = ""
   function selfName() {
-    const b = [...document.querySelectorAll("button[aria-label^='More options for ']")][0]
-    return b ? b.getAttribute("aria-label").replace("More options for ", "").trim() : ""
+    const b = document.querySelector("button[aria-label^='More options for ']")
+    const name = b ? b.getAttribute("aria-label").replace("More options for ", "").trim() : ""
+    if (name) lastSelfName = name
+    return lastSelfName
   }
 
   async function gunzip(bytes) {
@@ -121,7 +126,8 @@
             meetLang = d.lang
             if (d.lang) {
               lastLang = d.lang
-              if (!flowing) epoch++
+              // A new subscription, even while ours flows: its utterance ids may start again (I4).
+              epoch++
               flowing = true
             } else {
               // Meet turned CC off, which stops the stream for this page too: ask again.
@@ -135,7 +141,7 @@
             if (d.kind === "reply" && d.seq === pending) {
               pending = 0
               tries = 0
-              if (!flowing) epoch++
+              epoch++
               flowing = true
             } else if (d.kind === "captions") {
               lastCaptionAt = m.t
@@ -160,15 +166,20 @@
     }
   }
 
-  // Name on each participant tile, keyed by the same device id the caption stream uses.
+  // Name on each participant tile, keyed by the same device id the caption stream uses. One
+  // person can have several tiles (camera and "Alice (Presentation)"): one name per id, the
+  // shortest, without a trailing "(...)", so it doesn't flip between tiles (transcript M10).
   function participantNames() {
-    const out = []
+    const byId = new Map()
     for (const tile of document.querySelectorAll("[data-participant-id]")) {
       const id = tile.getAttribute("data-participant-id")
       const span = [...tile.querySelectorAll("span.notranslate")].find((s) => !s.children.length && text(s))
-      if (id && span) out.push([id, text(span)])
+      if (!id || !span) continue
+      const name = text(span).replace(/\s*\([^()]*\)$/, "") || text(span)
+      const had = byId.get(id)
+      if (!had || name.length < had.length || (name.length === had.length && name < had)) byId.set(id, name)
     }
-    return out
+    return [...byId]
   }
 
   const adapter = {
@@ -226,12 +237,22 @@
     // While captions are on, Meet shrinks the video grid by a fixed caption band (the bottom of its
     // inline `inset`) and lays tiles out for that smaller box. It never re-measures, so hiding the
     // caption box leaves an empty gap. When hidden, scale and centre the tiles into the grid plus
-    // the band. Only tiles are transformed; the grid's other children are left alone.
+    // the band. Only tiles are moved; the grid's other children are left alone.
+    // Meet owns the tiles' `transform` (animations, layouts): we never write it. Our move uses the
+    // separate `translate` and `scale` properties, which the browser applies on top of the tile's
+    // own transform, so a host transform is kept and scaled with the tile (runtime I5). A grid
+    // whose tiles already use `translate`/`scale` themselves is left alone.
     reclaimCaptionSpace(hidden) {
       const ATTR = "data-callscribe-tile"
       const region = hidden ? captionRegion() : null
       const band = region ? captionBandHeight(region) : 0
       const want = new Map()
+      const r = (n) => Math.round(n * 100) / 100
+      const hostMoves = (k) => {
+        if (k.hasAttribute(ATTR)) return false // ours
+        const cs = getComputedStyle(k)
+        return (cs.translate && cs.translate !== "none") || (cs.scale && cs.scale !== "none")
+      }
       if (band) {
         for (const g of document.querySelectorAll('[style*="inset"]')) {
           if (!g.querySelector("[data-participant-id]")) continue
@@ -239,7 +260,7 @@
           const tiles = [...g.children].filter(
             (k) => k.offsetWidth && k.offsetHeight && (k.matches("[data-participant-id]") || k.querySelector("[data-participant-id]")),
           )
-          if (!tiles.length) continue
+          if (!tiles.length || tiles.some(hostMoves)) continue
           const x0 = Math.min(...tiles.map((k) => k.offsetLeft))
           const y0 = Math.min(...tiles.map((k) => k.offsetTop))
           const bw = Math.max(...tiles.map((k) => k.offsetLeft + k.offsetWidth)) - x0
@@ -247,13 +268,15 @@
           const W = g.offsetWidth
           const H = g.offsetHeight + band
           const s = Math.max(1, Math.min(W / bw, H / bh))
+          // Every tile point p (as Meet draws it, own transform included) goes to s * p + (tx, ty).
           const tx = (W - s * bw) / 2 - s * x0
           const ty = (H - s * bh) / 2 - s * y0
-          const r = (n) => Math.round(n * 100) / 100
           for (const k of tiles) {
-            const dx = tx + s * k.offsetLeft - k.offsetLeft
-            const dy = ty + s * k.offsetTop - k.offsetTop
-            want.set(k, `translate(${r(dx)}px, ${r(dy)}px) scale(${Math.round(s * 1000) / 1000})`)
+            // `scale` works about the tile's transform-origin O, so translate by T + (s - 1) * O.
+            const [ox, oy] = getComputedStyle(k).transformOrigin.split(" ").map(parseFloat)
+            const dx = tx + (s - 1) * (k.offsetLeft + (ox || 0))
+            const dy = ty + (s - 1) * (k.offsetTop + (oy || 0))
+            want.set(k, `translate: ${r(dx)}px ${r(dy)}px !important; scale: ${Math.round(s * 1000) / 1000} !important;`)
           }
         }
       }
@@ -262,7 +285,7 @@
       let i = 0
       for (const [k, t] of want) {
         if (k.getAttribute(ATTR) !== String(i)) k.setAttribute(ATTR, String(i))
-        rules.push(`[${ATTR}="${i++}"] { transform-origin: 0 0 !important; transform: ${t} !important; }`)
+        rules.push(`[${ATTR}="${i++}"] { ${t} }`)
       }
       const css = rules.join("\n")
       let sheet = document.getElementById("callscribe-caption-space")

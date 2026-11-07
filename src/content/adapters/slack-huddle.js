@@ -45,7 +45,8 @@
 
     title() {
       const t = text(first(SEL.title))
-      if (t) return t.replace(/^Huddle( in)?\s*/i, "") || t
+      // "Huddle in #general" -> "#general"; "Huddle with Alice" stays as it is.
+      if (t) return t.replace(/^Huddle in\s+/i, "") || t
       const ch = text(document.querySelector('[data-qa="channel_name_button"]'))
       return ch ? `Huddle in ${ch}` : ""
     },
@@ -91,20 +92,29 @@
           rows = []
         }
       }
+      // Slack groups consecutive captions from one person under one name label: a row without
+      // one takes the nearest label before it. Each element is looked at once per read.
+      const speakers = new Map()
+      const speakerOf = (row) => {
+        const walked = []
+        let found = ""
+        for (let el = row; el; el = el.previousElementSibling) {
+          if (speakers.has(el)) {
+            found = speakers.get(el)
+            break
+          }
+          walked.push(el)
+          found = text(el.querySelector(SEL.author))
+          if (found) break
+        }
+        for (const el of walked) speakers.set(el, found)
+        return found
+      }
       const out = []
       for (const row of rows) {
         const said = text(first(SEL.text, row)) || (row.matches('[data-qa="huddle_transcribe_event"]') ? text(row) : "")
         if (!said) continue
-        // Slack groups consecutive captions from one person under one name label.
-        let speaker = text(row.querySelector(SEL.author))
-        if (!speaker) {
-          let prev = row.previousElementSibling
-          while (prev && !speaker) {
-            speaker = text(prev.querySelector(SEL.author))
-            prev = prev.previousElementSibling
-          }
-        }
-        out.push({ key: row, speaker, text: said })
+        out.push({ key: row, speaker: speakerOf(row), text: said })
       }
       return out
     },
