@@ -167,6 +167,14 @@
       this.dirty = false
       return this.entries.filter((e) => e.text).map((e) => ({ ...e }))
     }
+
+    // Same entries as snapshot(), for display: leaves dirty alone so autosave still fires.
+    view() {
+      const live = new Set(this.live.values())
+      return this.entries
+        .filter((e) => e.text)
+        .map((e) => ({ speaker: e.speaker, text: e.text, start: e.start, end: e.end, live: live.has(e) }))
+    }
   }
 
   /**
@@ -192,6 +200,7 @@
       if (e) {
         if (u.version < e.version) return
         e.version = u.version
+        e.final = !!u.final
         if (text && text !== e.text) {
           e.text = text
           e.end = t
@@ -200,7 +209,7 @@
         return
       }
       if (!text) return
-      const entry = { device: u.device, text, start: t, end: t, version: u.version }
+      const entry = { device: u.device, text, start: t, end: t, version: u.version, final: !!u.final }
       this.byKey.set(key, entry)
       this.entries.push(entry)
       this.dirty = true
@@ -218,6 +227,13 @@
       return this.entries
         .filter((e) => e.text)
         .map((e) => ({ speaker: this.names.get(e.device) || "Unknown", text: e.text, start: e.start, end: e.end }))
+    }
+
+    // Same entries as snapshot(), for display: leaves dirty alone so autosave still fires.
+    view() {
+      return this.entries
+        .filter((e) => e.text)
+        .map((e) => ({ speaker: this.names.get(e.device) || "Unknown", text: e.text, start: e.start, end: e.end, live: !e.final }))
     }
   }
 

@@ -1,6 +1,6 @@
 const test = require("node:test")
 const assert = require("node:assert/strict")
-const { mergeText, CaptionTracker } = require("../src/shared/merge.js")
+const { mergeText, CaptionTracker, UtteranceTracker } = require("../src/shared/merge.js")
 
 test("growing row keeps the newest rendering", () => {
   assert.equal(mergeText("Hello team this", "Hello team this is a test"), "Hello team this is a test")
@@ -92,4 +92,28 @@ test("a reused row element for a different speaker starts a new utterance", () =
   tr.update([{ key: k, speaker: "Alice", text: "Hello" }])
   tr.update([{ key: k, speaker: "Bob", text: "Hey" }])
   assert.deepEqual(tr.snapshot().map((e) => e.speaker), ["Alice", "Bob"])
+})
+
+test("UtteranceTracker.view does not clear dirty and marks live utterances", () => {
+  const tr = new UtteranceTracker(() => 1000)
+  tr.add({ id: 1, version: 1, text: "hello there", final: false, device: "d1" })
+  assert.equal(tr.dirty, true)
+  let v = tr.view()
+  assert.equal(tr.dirty, true)
+  assert.deepEqual(v.map((e) => [e.speaker, e.text, e.live]), [["Unknown", "hello there", true]])
+  tr.add({ id: 1, version: 2, text: "hello there team", final: true, device: "d1" })
+  tr.setName("d1", "Priya")
+  v = tr.view()
+  assert.deepEqual(v.map((e) => [e.speaker, e.text, e.live]), [["Priya", "hello there team", false]])
+})
+
+test("CaptionTracker.view does not clear dirty; row on screen is live, gone row is not", () => {
+  let t = 1000
+  const tr = new CaptionTracker(() => t)
+  const a = {}
+  tr.update([{ key: a, speaker: "A", text: "Hello" }])
+  assert.deepEqual(tr.view().map((e) => [e.speaker, e.text, e.live]), [["A", "Hello", true]])
+  assert.equal(tr.dirty, true)
+  t = 2000; tr.update([])
+  assert.deepEqual(tr.view().map((e) => e.live), [false])
 })
