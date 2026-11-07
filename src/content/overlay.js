@@ -11,6 +11,14 @@
   const SILENCE_MS = 30000
   const FOLLOW_PX = 24
   const AUDIO_START_MS = 10000
+  // The expanded transcript mounts a window of the latest WINDOW lines, and BATCH more each
+  // time the user scrolls near its top, so opening a long call is one short task and the
+  // whole call can still be scrolled back to. While following the latest line, the window
+  // is trimmed back once it holds more than MAX_FOLLOW rows.
+  const WINDOW = 60
+  const BATCH = 60
+  const MAX_FOLLOW = 240
+  const EXTEND_PX = 300
 
   const pad = (n) => String(n).padStart(2, "0")
 
@@ -77,47 +85,57 @@
     }
   }
 
-  // One element per line index. Existing rows are patched only where speaker, text, time or
-  // the live flag changed; new lines are appended. Text goes in via textContent only.
-  function renderRows(doc, list, lines, startedAt) {
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i]
-      let row = list.children[i]
-      if (!row) {
-        row = doc.createElement("div")
-        row.time = doc.createElement("span")
-        row.time.className = "t"
-        row.speaker = doc.createElement("b")
-        row.text = doc.createElement("span")
-        row.appendChild(row.time)
-        row.appendChild(row.speaker)
-        row.appendChild(row.text)
-        row.className = "row"
-        list.appendChild(row)
-      }
-      const time = formatElapsed(line.start - startedAt)
-      const speaker = `${line.speaker}:`
-      const live = !!line.live
-      if (row._time !== time) row.time.textContent = row._time = time
-      if (row._speaker !== speaker) row.speaker.textContent = row._speaker = speaker
-      if (row._text !== line.text) row.text.textContent = row._text = line.text
-      if (row._live !== live) {
-        row._live = live
-        row.className = live ? "row live" : "row"
-      }
+  // A transcript row. Names and captions can be in any script: each picks its own direction
+  // (dir=auto, which also isolates it) inside the overlay's left-to-right layout.
+  function makeRow(doc) {
+    const row = doc.createElement("div")
+    row.time = doc.createElement("span")
+    row.time.className = "t"
+    row.speaker = doc.createElement("b")
+    row.speaker.dir = "auto"
+    row.text = doc.createElement("span")
+    row.text.dir = "auto"
+    row.appendChild(row.time)
+    row.appendChild(row.speaker)
+    row.appendChild(row.text)
+    row.className = "row"
+    return row
+  }
+  // Writes only what changed. Text goes in via textContent only.
+  function patchRow(row, line, startedAt) {
+    const time = formatElapsed(line.start - startedAt)
+    const speaker = `${line.speaker}:`
+    const live = !!line.live
+    if (row._time !== time) row.time.textContent = row._time = time
+    if (row._speaker !== speaker) row.speaker.textContent = row._speaker = speaker
+    if (row._text !== line.text) row.text.textContent = row._text = line.text
+    if (row._live !== live) {
+      row._live = live
+      row.className = live ? "row live" : "row"
     }
-    while (list.children.length > lines.length) list.lastChild.remove()
+  }
+
+  // One element per line, for lines[from..]: row k shows lines[from + k]. Existing rows are
+  // patched only where speaker, text, time or the live flag changed; new lines are appended.
+  function renderRows(doc, list, lines, startedAt, from = 0) {
+    for (let i = from; i < lines.length; i++) {
+      let row = list.children[i - from]
+      if (!row) row = list.appendChild(makeRow(doc))
+      patchRow(row, lines[i], startedAt)
+    }
+    while (list.children.length > Math.max(0, lines.length - from)) list.lastChild.remove()
   }
 
   const CSS = `
-:host { all: initial; }
+:host { all: initial; direction: ltr; }
 * { box-sizing: border-box; }
 .box { font: 12px/1.45 "Google Sans", Roboto, system-ui, sans-serif; color: #e8eaed;
   background: rgba(32,33,36,.96); border: 1px solid #5f6368; box-shadow: 0 2px 8px rgba(0,0,0,.35); }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: #ea4335; flex: none;
   box-shadow: 0 0 0 3px rgba(234,67,53,.25); }
 .dot.warn { background: #fdd663; box-shadow: 0 0 0 3px rgba(253,214,99,.25); }
-.pill { display: flex; align-items: center; gap: 7px; max-width: 420px; border-radius: 999px;
+.box { direction: ltr; unicode-bidi: isolate; }
+.pill { display: flex; align-items: center; gap: 7px; max-width: min(420px, calc(var(--cs-vw, 100vw) - 8px)); border-radius: 999px;
   padding: 5px 11px; white-space: nowrap; cursor: pointer; user-select: none; touch-action: none; }
 .pill .el { font-variant-numeric: tabular-nums; flex: none; }
 .pill .sep { color: #9aa0a6; flex: none; }
@@ -125,10 +143,12 @@
 .pill .sp { flex: none; max-width: 120px; overflow: hidden; text-overflow: ellipsis; }
 .pill .sp:empty { display: none; }
 .tail { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
-.tail > span { direction: ltr; unicode-bidi: isolate; }
+.tail > span { unicode-bidi: isolate; }
 .tail.wait { color: #9aa0a6; direction: ltr; }
 .live, .tail.live { font-style: italic; }
-.card { position: relative; width: 310px; border-radius: 10px; overflow: hidden; }
+.card { position: relative; width: min(310px, calc(var(--cs-vw, 100vw) - 8px)); border-radius: 10px; overflow: hidden;
+  display: flex; flex-direction: column; max-height: calc(var(--cs-vh, 100vh) - 12px); }
+.hd, .st { flex: none; }
 .hd { display: flex; align-items: center; gap: 7px; font-weight: 600; font-size: 12px;
   padding: 8px 11px 4px; cursor: pointer; user-select: none; touch-action: none; }
 .hd .x { margin-left: auto; color: #9aa0a6; font-weight: 400; }
@@ -138,11 +158,12 @@
 .cc { font: inherit; font-size: 10.5px; margin-left: 6px; padding: 0 7px; border-radius: 999px; cursor: pointer;
   color: #8ab4f8; background: transparent; border: 1px solid #5f6368; line-height: 16px; }
 .cc:hover { background: rgba(138,180,248,.12); }
-.log { max-height: 220px; overflow-y: auto; padding: 6px 11px 8px; overscroll-behavior: contain;
+.log { flex: 0 1 auto; min-height: 0; max-height: 220px; overflow-y: auto; padding: 6px 11px 8px; overscroll-behavior: contain; overflow-anchor: none;
   scrollbar-width: thin; scrollbar-color: #5f6368 transparent; }
 .row { margin-bottom: 4px; overflow-wrap: anywhere; }
 .row .t { color: #9aa0a6; font-size: 10.5px; margin-right: 5px; font-variant-numeric: tabular-nums; }
 .row b { margin-right: 4px; }
+.row b, .row span { unicode-bidi: isolate; }
 .row.live { opacity: .75; }
 .empty { color: #9aa0a6; padding: 2px 0 4px; }
 .jump { position: absolute; right: 10px; bottom: 8px; background: #8ab4f8; color: #202124;
@@ -166,7 +187,7 @@
 
     const host = doc.createElement("div")
     host.id = "callscribe-overlay"
-    host.style.cssText = "position:fixed;z-index:2147483647;top:8px;left:50%;transform:translateX(-50%);margin:0;padding:0;border:0;"
+    host.style.cssText = "position:fixed;z-index:2147483647;top:8px;left:50%;transform:translateX(-50%);margin:0;padding:0;border:0;direction:ltr;"
     host.setAttribute("data-state", "collapsed")
     host.setAttribute("data-latest", "")
     const shadow = host.attachShadow({ mode: "closed" })
@@ -178,8 +199,10 @@
     const pEl = el("span", "el", pill, "0:00")
     const pSep = el("span", "sep", pill, "·")
     const pSp = el("span", "sp", pill)
+    pSp.dir = "auto"
     const pTail = el("span", "tail wait", pill)
     const pTailText = el("span", null, pTail, "waiting for captions…")
+    pTailText.dir = "auto"
 
     // Expanded card.
     const card = el("div", "box card", shadow)
@@ -202,6 +225,8 @@
     let removed = false
     let last = null // last state, for re-rendering on expand
     let orphan = false // warning-only pill: no expanding
+    let from = 0 // the transcript shows lines[from..]
+    let shown = null // the lines array the transcript was last rendered from
     const seen = {} // cache of last written values for the cheap update path
 
     const set = (key, node, value) => {
@@ -215,7 +240,22 @@
 
     // pos is where the user put it (drag or saved overlayPos). What's shown is a clamped copy,
     // so growing or expanding near an edge never moves the remembered spot.
-    const viewport = () => ({ vw: win.innerWidth, vh: win.innerHeight })
+    // The usable viewport excludes page scrollbars; at high zoom or in a small window the
+    // pill and card shrink to it (--cs-vw/--cs-vh), so the default top-centre spot fits too.
+    function viewport() {
+      const de = doc.documentElement
+      const vw = Math.min(win.innerWidth, (de && de.clientWidth) || win.innerWidth)
+      const vh = Math.min(win.innerHeight, (de && de.clientHeight) || win.innerHeight)
+      return { vw, vh }
+    }
+    let view = null
+    function fitViewport() {
+      const v = viewport()
+      if (view && v.vw === view.vw && v.vh === view.vh) return
+      view = v
+      host.style.setProperty("--cs-vw", `${v.vw}px`)
+      host.style.setProperty("--cs-vh", `${v.vh}px`)
+    }
     let size = { w: 0, h: 0 }
     function place() {
       const r = host.getBoundingClientRect()
@@ -226,11 +266,11 @@
         host.style.top = "8px"
         return null
       }
-      const shown = clampPos(pos, size, viewport())
+      const at = clampPos(pos, size, viewport())
       host.style.transform = "none"
-      host.style.left = `${shown.x}px`
-      host.style.top = `${shown.y}px`
-      return shown
+      host.style.left = `${at.x}px`
+      host.style.top = `${at.y}px`
+      return at
     }
     // The pill's width follows its text (up to 420 px): re-clamp whenever the size changes.
     function placeIfResized() {
@@ -246,12 +286,50 @@
       log.scrollTop = log.scrollHeight
     }
 
-    function renderList(state) {
+    // Only the lines from `from` on are mounted. An unchanged lines array (main.js hands the
+    // same one back while nothing changed) costs nothing; otherwise only mounted rows are
+    // patched, and scroll geometry is touched only to follow the latest line.
+    function renderList(state, force) {
       const lines = state.lines || []
+      if (!force && lines === shown) return
+      shown = lines
       empty.hidden = lines.length > 0
-      renderRows(doc, list, lines, state.startedAt || 0)
+      const n = lines.length
+      if (from > n) {
+        list.textContent = ""
+        from = Math.max(0, n - WINDOW)
+      }
+      if (follow && n - from > MAX_FOLLOW) {
+        const drop = n - WINDOW - from
+        for (let k = 0; k < drop && list.firstChild; k++) list.firstChild.remove()
+        from += drop
+      }
+      renderRows(doc, list, lines, state.startedAt || 0, from)
       if (follow) toBottom()
       jump.hidden = follow
+    }
+    // Scrolled near the top of what's mounted: mount the previous BATCH lines above it,
+    // keeping what the user is looking at in place.
+    function extendUp() {
+      if (!expanded || !from || !shown || log.scrollTop > EXTEND_PX) return
+      const k = Math.min(BATCH, from)
+      const startedAt = (last && last.startedAt) || 0
+      const frag = doc.createDocumentFragment()
+      for (let i = from - k; i < from; i++) {
+        const row = makeRow(doc)
+        patchRow(row, shown[i], startedAt)
+        frag.appendChild(row)
+      }
+      const h = log.scrollHeight
+      list.insertBefore(frag, list.firstChild)
+      from -= k
+      log.scrollTop += log.scrollHeight - h
+    }
+    // Collapsed: no transcript rows are kept in the page.
+    function releaseList() {
+      list.textContent = ""
+      shown = null
+      from = 0
     }
 
     function renderOrphan(m) {
@@ -318,8 +396,12 @@
       attr("data-state", expanded ? "expanded" : "collapsed")
       if (expanded) {
         follow = true
-        if (last) renderList(last)
+        const n = (last && last.lines && last.lines.length) || 0
+        from = Math.max(0, n - WINDOW)
+        if (last) renderList(last, true)
         toBottom()
+      } else {
+        releaseList()
       }
       place()
     }
@@ -378,20 +460,29 @@
     log.addEventListener("scroll", () => {
       follow = atBottom()
       jump.hidden = follow
+      extendUp()
     })
     jump.addEventListener("click", (e) => {
       e.stopPropagation()
       follow = true
       jump.hidden = true
+      // Back to a short window at the latest line.
+      if (last && shown && shown.length - from > WINDOW) {
+        releaseList()
+        from = Math.max(0, ((last.lines && last.lines.length) || 0) - WINDOW)
+        renderList(last, true)
+      }
       toBottom()
     })
 
     const onResize = () => {
+      fitViewport()
       if (pos) place()
     }
     win.addEventListener("resize", onResize)
 
     doc.documentElement.appendChild(host)
+    fitViewport()
 
     if (storage) {
       try {

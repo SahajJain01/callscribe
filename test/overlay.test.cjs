@@ -247,3 +247,21 @@ test("overlayModel: audio that could not be saved is a warning, flagged on the p
   assert.deepEqual(row(m, "Audio"), { label: "Audio", value: "save failed", level: "warn" })
   assert.equal(m.dotWarn, true)
 })
+
+test("renderRows gives caption text and names their own direction (runtime RTL minor)", () => {
+  const doc = fakeDoc()
+  const list = doc.createElement("div")
+  renderRows(doc, list, [{ speaker: "مريم", text: "مرحبا", start: T0, live: false }], T0)
+  assert.equal(list.children[0].text.dir, "auto")
+  assert.equal(list.children[0].speaker.dir, "auto")
+})
+
+test("renderRows renders only the window from a given line on (runtime I3)", () => {
+  const doc = fakeDoc()
+  const list = doc.createElement("div")
+  const lines = Array.from({ length: 2000 }, (_, i) => ({ speaker: "Sam", text: `line ${i}`, start: T0 + i * 1000, live: false }))
+  renderRows(doc, list, lines, T0, 1950)
+  assert.equal(list.children.length, 50)
+  assert.equal(list.children[0].text.textContent, "line 1950")
+  assert.equal(list.children[49].text.textContent, "line 1999")
+})
