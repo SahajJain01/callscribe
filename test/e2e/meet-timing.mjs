@@ -65,7 +65,14 @@ console.log("fixture tab visibility:", vis)
 check(vis === "hidden", "fixture runs in a hidden tab (rAF stalled)")
 
 let log = []
-for (let i = 0; i < 45; i++) { await sleep(1000); log = (await evalPage("window.__log")) || []; if (log.includes("left")) break }
+let overlaySeen = false
+for (let i = 0; i < 45; i++) {
+  await sleep(1000)
+  log = (await evalPage("window.__log")) || []
+  if (log.includes("left")) break
+  if (await evalPage("Boolean(document.getElementById('callscribe-overlay'))")) overlaySeen = true
+}
+check(overlaySeen, "overlay present in the Meet fixture tab")
 const truth = (await evalPage("window.__truth")) || []
 console.log("fixture:", log.join(" | "), "| turns:", truth.length)
 

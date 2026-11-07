@@ -3,7 +3,7 @@
 import { getSession, putSession, updateSession, listSessions, putChunk, getChunks, deleteSession } from "../shared/db.js"
 import { formatTranscript, fileBase } from "../shared/format.js"
 
-const DEFAULTS = { recordAudio: true, includeMic: true, autoCaptions: true, hideCaptions: true, autoDownload: true, folder: "CallScribe" }
+const DEFAULTS = { recordAudio: true, includeMic: true, autoCaptions: true, hideCaptions: true, showOverlay: true, autoDownload: true, folder: "CallScribe" }
 const STALE_MS = 2 * 60 * 1000
 
 async function settings() {

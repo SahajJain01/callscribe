@@ -10,8 +10,8 @@
   const END_GRACE_MS = 4000
   const SAVE_EVERY_MS = 3000
 
-  let settings = { recordAudio: true, includeMic: true, autoCaptions: true, hideCaptions: true }
-  let session = null // { id, tracker, startedAt, lastInCall, captionsTried, savedAt }
+  let settings = { recordAudio: true, includeMic: true, autoCaptions: true, hideCaptions: true, showOverlay: true }
+  let session = null // { id, tracker, utterances, startedAt, lastInCall, captionsTried, savedAt, audio, lastCaptionAt }
   let readTimer = 0
   let lastMuted
 
@@ -34,7 +34,12 @@
   const stream = adapter.createCaptionStream
     ? adapter.createCaptionStream({
         toPage,
-        onUtterance: (u, t) => session && session.utterances.add(u, t),
+        onUtterance: (u, t) => {
+          if (!session) return
+          session.utterances.add(u, t)
+          session.lastCaptionAt = Date.now()
+          scheduleOverlay()
+        },
         onName: (id, name) => {
           names.set(id, name)
           session && session.utterances.setName(id, name)
@@ -50,11 +55,51 @@
   chrome.storage.local.get("settings").then((r) => {
     Object.assign(settings, r.settings || {})
     applyHide()
+    syncOverlay()
   })
   chrome.storage.onChanged.addListener((c) => {
     if (c.settings) Object.assign(settings, c.settings.newValue || {})
     applyHide()
+    syncOverlay()
   })
+
+  // In-call overlay. It only reads state; any failure in it is logged and ignored so it
+  // can never affect capture or saving.
+  let overlay = null
+  let overlayTimer = 0
+  function overlayState() {
+    const feed = session.utterances.view()
+    return {
+      platform: adapter.id,
+      startedAt: session.startedAt,
+      source: streamActive() ? "feed" : captionsOn() ? "cc" : "none",
+      audio: session.audio,
+      micMuted: lastMuted,
+      lines: feed.length ? feed : session.tracker.view(),
+      lastCaptionAt: session.lastCaptionAt,
+    }
+  }
+  function syncOverlay() {
+    try {
+      if (!session || settings.showOverlay === false) {
+        if (overlay) overlay.remove()
+        overlay = null
+        return
+      }
+      if (!overlay) overlay = CS.createOverlay({ doc: document, storage: chrome.storage.local })
+      overlay.update(overlayState())
+    } catch (e) {
+      console.debug("[CallScribe] overlay sync failed", e)
+    }
+  }
+  // Caption updates refresh the overlay at most every 250 ms.
+  function scheduleOverlay() {
+    if (overlayTimer) return
+    overlayTimer = setTimeout(() => {
+      overlayTimer = 0
+      syncOverlay()
+    }, 250)
+  }
 
   // Hidden captions: keep the caption box rendering (we read it) but move it off-screen.
   function applyHide() {
@@ -81,7 +126,10 @@
 
   function startSession() {
     const id = `${adapter.id}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
-    session = { id, tracker: new CS.CaptionTracker(), utterances: new CS.UtteranceTracker(), startedAt: Date.now(), lastInCall: Date.now(), captionsTried: 0, savedAt: 0 }
+    session = {
+      id, tracker: new CS.CaptionTracker(), utterances: new CS.UtteranceTracker(), startedAt: Date.now(), lastInCall: Date.now(), captionsTried: 0, savedAt: 0,
+      audio: settings.recordAudio ? "starting" : "off", lastCaptionAt: 0,
+    }
     names.forEach((name, speaker) => session.utterances.setName(speaker, name))
     send({
       type: "session-start",
@@ -116,6 +164,7 @@
     readCaptions()
     save(true)
     session = null
+    syncOverlay()
     stream && stream.stop()
     observer && observer.disconnect()
     toPage({ type: "render-keepalive", on: false })
@@ -141,11 +190,14 @@
 
   function readCaptions() {
     if (!session) return
+    const wasDirty = session.tracker.dirty
     try {
       session.tracker.update(adapter.captionRows())
     } catch (e) {
       console.debug("[CallScribe] caption read failed", e)
     }
+    if (session.tracker.dirty && !wasDirty) session.lastCaptionAt = Date.now()
+    scheduleOverlay()
   }
 
   // Captions change many times a second; read at most every 250 ms.
@@ -171,6 +223,7 @@
     } else if (m.type === "chunk") {
       send({ type: "audio-chunk", id: m.id, seq: m.seq, mime: m.mime, b64: b64(m.buf) })
     } else if (m.type === "started" || m.type === "error" || m.type === "log") {
+      if (session && m.id === session.id && m.type !== "log") session.audio = m.type === "started" ? "recording" : "error"
       send({ type: "audio-" + m.type, id: m.id, detail: m })
     }
   })
@@ -213,6 +266,8 @@
     readCaptions()
     reclaimSpace()
     if (Date.now() - session.savedAt >= SAVE_EVERY_MS) save(false)
+    // Every second regardless of dirty: the elapsed time ticks and live lines turn final.
+    syncOverlay()
   }, 1000)
 
   window.addEventListener("pagehide", () => endSession("page-closed"))

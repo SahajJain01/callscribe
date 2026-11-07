@@ -63,6 +63,7 @@
         "src/shared/merge.js",
         "src/shared/meet-proto.js",
         "src/content/adapters/google-meet.js",
+        "src/content/overlay.js",
         "src/content/main.js"
       ],
       "run_at": "document_idle"
@@ -74,6 +75,7 @@
       "js": [
         "src/shared/merge.js",
         "src/content/adapters/slack-huddle.js",
+        "src/content/overlay.js",
         "src/content/main.js"
       ],
       "run_at": "document_idle"

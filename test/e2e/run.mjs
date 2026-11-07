@@ -58,18 +58,73 @@ const { result: { targetId } } = await send("Target.createTarget", { url: "https
 const { result: { sessionId } } = await send("Target.attachToTarget", { targetId, flatten: true })
 const evalPage = async (expression) => (await send("Runtime.evaluate", { expression, returnByValue: true }, sessionId)).result?.result?.value
 
+// Settings are changed the way the popup does it: chrome.storage.local in the service worker.
+async function swSession() {
+  for (let i = 0; i < 20; i++) {
+    const { result } = await send("Target.getTargets")
+    const sw = result.targetInfos.find((t) => t.type === "service_worker" && t.url.endsWith("/src/background/index.js"))
+    if (sw) return (await send("Target.attachToTarget", { targetId: sw.targetId, flatten: true })).result.sessionId
+    await sleep(250)
+  }
+}
+const sws = await swSession()
+const setShowOverlay = (on) => send("Runtime.evaluate", { expression: `chrome.storage.local.get("settings").then((r) => chrome.storage.local.set({ settings: { ...(r.settings || {}), showOverlay: ${on} } }))`, awaitPromise: true }, sws)
+// The overlay's host element exposes its state as attributes (its shadow root is closed).
+const overlayInfo = () => evalPage(`(()=>{const h=document.getElementById('callscribe-overlay'); return h ? { state: h.getAttribute('data-state'), latest: h.getAttribute('data-latest') } : null})()`)
+async function waitOverlay(present, ms) {
+  for (const end = Date.now() + ms; Date.now() < end; await sleep(100)) if (Boolean(await overlayInfo()) === present) return true
+  return false
+}
+
 // The fixture joins, captions for ~10 s, then leaves; the extension needs a few seconds to finalize.
 let fixtureLog = []
 let captionRight
+let overlayShown = false
+let overlayLatest = false
+let toggled = false
+let clicked = false
 for (let i = 0; i < 40; i++) {
   await sleep(1000)
   fixtureLog = (await evalPage("window.__log || []")) || []
   if (fixtureLog.includes("left")) break
   const box = await evalPage(`(()=>{const e=document.querySelector('.p-huddle_closed_captions'); if(!e||!e.textContent) return null; const r=e.getBoundingClientRect(); return r.right})()`)
   if (box !== null && box !== undefined) captionRight = box
+  const ov = await overlayInfo()
+  if (ov) overlayShown = true
+  if (ov && /Morning everyone|Sure, I pushed|Great, ship it/.test(ov.latest || "")) overlayLatest = true
+  // Mid-call toggle from the settings: the overlay goes and comes back without a new session.
+  if (overlayLatest && !toggled) {
+    toggled = true
+    await setShowOverlay(false)
+    check(await waitOverlay(false, 2000), "overlay hidden within 2 s when the setting is turned off")
+    await setShowOverlay(true)
+    check(await waitOverlay(true, 3000), "overlay returns when the setting is turned back on")
+  }
+  // Once the last line is in: clicking the pill must expand it without taking focus from the page.
+  if (toggled && !clicked && ov && /Great, ship it/.test(ov.latest || "")) {
+    clicked = true
+    await evalPage(`(()=>{const i=document.createElement('input'); i.id='cs-focus-probe'; i.placeholder='page input (focus probe)'; document.body.appendChild(i); i.focus(); return document.activeElement===i})()`)
+    const r = await evalPage(`(()=>{const b=document.getElementById('callscribe-overlay').getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }})()`)
+    for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+      await send("Input.dispatchMouseEvent", { type, x: r.x, y: r.y, button: type === "mouseMoved" ? "none" : "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: type === "mouseMoved" ? 0 : 1 }, sessionId)
+    }
+    await sleep(300)
+    check(await evalPage(`document.activeElement && document.activeElement.id === 'cs-focus-probe'`), "overlay click keeps page focus")
+    check((await overlayInfo())?.state === "expanded", "overlay expands on click")
+    // Render the tab with the overlay expanded so it can be eyeballed: <work>/overlay.png
+    await sleep(500)
+    const shot = await send("Page.captureScreenshot", { format: "png" }, sessionId)
+    fs.writeFileSync(path.join(work, "overlay.png"), Buffer.from(shot.result.data, "base64"))
+    console.log("overlay screenshot:", path.join(work, "overlay.png"))
+  }
 }
 check(captionRight !== undefined && captionRight < 0, "caption box hidden off-screen (right edge " + captionRight + ")")
+check(overlayShown, "overlay shown during the call")
+check(overlayLatest, "overlay shows the latest caption")
+check(toggled, "overlay toggle ran during the call")
+check(clicked, "overlay click ran during the call")
 console.log("fixture:", fixtureLog.join(" | "))
+check(await waitOverlay(false, 6000), "overlay removed after the call")
 
 const deadline = Date.now() + 30000
 let files = []
