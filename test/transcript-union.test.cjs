@@ -108,6 +108,27 @@ test("minor: an unnamed feed line takes the name the page knows", () => {
   assert.deepEqual(lines(out), ["Bob:Thanks everyone"])
 })
 
+test("re-review: Bob's 'Yes.' is not filed under Alice when the feed left Bob unnamed", () => {
+  const feed = [
+    { speaker: "Alice", text: "Yes.", start: 1000, end: 1500 },
+    { speaker: "Unknown speaker 1", text: "Yes.", start: 2500, end: 3000 },
+  ]
+  const dom = [
+    { speaker: "Alice", text: "Yes.", start: 1000, end: 1500 },
+    { speaker: "Bob", text: "Yes.", start: 2500, end: 3000 },
+  ]
+  assert.deepEqual(lines(mergeSources(feed, dom)), ["Alice:Yes.", "Bob:Yes."])
+  // Page lines in either order give the same names.
+  assert.deepEqual(lines(mergeSources(feed, dom.slice().reverse())), ["Alice:Yes.", "Bob:Yes."])
+})
+
+test("re-review: an unnamed feed line far from the page line keeps its own name", () => {
+  const feed = [{ speaker: "Unknown speaker 1", text: "Thanks everyone", start: 0, end: 500 }]
+  const dom = [{ speaker: "Bob", text: "Thanks everyone", start: 3200, end: 3600 }]
+  const out = lines(mergeSources(feed, dom))
+  assert.ok(!out.includes("Bob:Thanks everyone") || out.length === 2, `unnamed line renamed across a gap: ${JSON.stringify(out)}`)
+})
+
 test("mergeSources does not change its inputs", () => {
   const feed = [{ speaker: "Bob", text: "We ship on Friday.", start: 1000, end: 2000 }]
   const dom = [{ speaker: "Bob (Acme)", text: "We ship on Friday", start: 1000, end: 2000 }]

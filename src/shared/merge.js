@@ -233,6 +233,10 @@
     }
     return r
   }
+  function holdsText(aText, bText) {
+    const r = alignTexts(aText, [bText])
+    return holds(r.at, r.length)
+  }
   function mergeSources(feed, dom) {
     feed = feed || []
     dom = dom || []
@@ -265,12 +269,21 @@
       const { at, length } = alignTexts(d.text, near.map((f) => f.text))
       if (holds(at, length)) {
         // The feed has all of it. The feed lines holding it take the page's name if fuller.
-        const owner = []
-        near.forEach((f, x) => { for (let k = lineKeys(f.text).length; k > 0; k--) owner.push(x) })
-        for (const j of at) if (j >= 0) {
-          const f = near[owner[j]]
-          const name = fuller(rename.has(f) ? rename.get(f) : f.speaker, d.speaker)
-          if (name !== f.speaker) rename.set(f, name)
+        // A feed line already carrying this person's name owns the page line: then no unnamed
+        // line is renamed (it may be someone else saying the same words). An unnamed line takes
+        // the name only if it overlaps the page line in time and no other name was given to it.
+        const named = near.find((f) => !anyone(f.speaker) && sameName(f.speaker, d.speaker) && holdsText(d.text, f.text))
+        const owners = named ? [named] : []
+        if (!named) {
+          const owner = []
+          near.forEach((f, x) => { for (let k = lineKeys(f.text).length; k > 0; k--) owner.push(x) })
+          for (const j of at) if (j >= 0 && !owners.includes(near[owner[j]])) owners.push(near[owner[j]])
+        }
+        for (const f of owners) {
+          const current = rename.has(f) ? rename.get(f) : f.speaker
+          if (unnamed(current) && !(f.start <= d.end && f.end >= d.start)) continue
+          const name = fuller(current, d.speaker)
+          if (name !== current) rename.set(f, name)
         }
         continue
       }
