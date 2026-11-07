@@ -29,7 +29,7 @@ PRIVATE BY DESIGN
 • Open source (MIT): https://github.com/SahajJain01/callscribe
 
 NOTES
-• Transcripts come from the platform's own captions, so they only cover the time captions were on. The audio backup covers everything.
+• Transcripts come from the platform's own live captions. In Slack they only cover the time captions were on. The audio backup covers everything.
 • Slack huddles must be in the Slack web app, not the desktop app.
 • Recording calls may need everyone's consent where you live. Please tell people you're recording.
 
