@@ -29,6 +29,8 @@
     author: ".p-huddle_closed_caption_event__member_name",
     text: ['.p-huddle_closed_caption_event__event_text span[data-qa="huddle_closed_caption_event"]', ".p-huddle_closed_caption_event__event_text"],
     captionsButton: ['[data-qa="huddle_toolbar_captions_button"]', 'button[aria-label="Turn on captions"]', 'button[aria-label="Show captions"]'],
+    micSwitch: ['button[role="switch"][aria-describedby="microphone-info"]', 'button[role="switch"][aria-label="Microphone"]'],
+    muteButton: ['[data-qa="huddle_sidebar_footer_mute_button"]', '[data-qa="segmented-mute-button-main"]', 'button[aria-describedby="microphone-info"]'],
   }
 
   const adapter = {
@@ -48,17 +50,28 @@
       return ch ? `Huddle in ${ch}` : ""
     },
 
-    /** true = muted, false = live, undefined = can't tell */
+    /**
+     * true = muted, false = live, undefined = can't tell (the mic is then not recorded).
+     * Language-independent signals first: the mic switch is the one described by
+     * #microphone-info, and its aria-checked is the state; the mic icons carry data-qa.
+     * The English label is only a last resort.
+     */
     selfMuted() {
-      const sw = document.querySelector('button[role="switch"][aria-label="Microphone"]')
-      if (sw && sw.getAttribute("aria-checked")) return sw.getAttribute("aria-checked") !== "true"
+      const sw = first(SEL.micSwitch)
+      const checked = sw && sw.getAttribute("aria-checked")
+      if (checked === "true" || checked === "false") return checked !== "true"
       if (document.querySelector('[data-qa="huddle_mic_icon_mute"]')) return true
       if (document.querySelector('[data-qa="huddle_mic_icon_unmute"]')) return false
-      const b = first(['[data-qa="huddle_sidebar_footer_mute_button"]', '[data-qa="segmented-mute-button-main"]'])
+      const b = first(SEL.muteButton)
       const label = b && (b.getAttribute("aria-label") || "")
       if (/^unmute/i.test(label)) return true
       if (/^mute/i.test(label)) return false
       return undefined
+    },
+
+    /** The control that mutes/unmutes you (a press on it closes the mic gate at once). */
+    micToggle() {
+      return first([...SEL.micSwitch, ...SEL.muteButton])
     },
 
     captionsOn() {

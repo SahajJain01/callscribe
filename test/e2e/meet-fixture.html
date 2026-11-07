@@ -1,6 +1,6 @@
 <!doctype html>
 <html>
-<head><meta charset="utf-8" /><title>Meet - fix-ture-tst</title></head>
+<head><!--ATTACKER--><meta charset="utf-8" /><title>Meet - fix-ture-tst</title></head>
 <body>
 <!--
   Mimics how Google Meet applies captions: caption text arrives on timers (like the network),
@@ -9,6 +9,8 @@
   runs, so without CallScribe's render keepalive the captions only reach the page in one
   burst when the tab is drawn again (the 2026-11-05 Companion-mode bug).
   window.__truth records when each turn's first words actually arrived.
+  The e2e server replaces the ATTACKER comment with a hostile inline script (attacker.js) that
+  forges a caption feed from real captions_v2 frames and keeps switching the keepalive off.
 -->
 <div id="call"></div>
 <script>
@@ -45,7 +47,7 @@ async function run() {
   window.__joinedAt = t0
   document.getElementById("call").innerHTML = `
     <div role="region" aria-label="Captions" tabindex="0"><div class="jump"><button aria-label="Jump to most recent captions">v</button></div></div>
-    <button aria-label="Turn off microphone">mic</button>
+    <button aria-label="Mikrofon deaktivieren" data-is-muted="false"><i class="google-symbols">mic</i></button>
     <button aria-label="Leave call">Leave</button>`
   const region = document.querySelector('[role="region"][aria-label="Captions"]')
   for (const turn of script) {

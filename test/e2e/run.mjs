@@ -16,9 +16,12 @@ fs.mkdirSync(downloads)
 
 execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=app.slack.com",
   "-keyout", path.join(work, "key.pem"), "-out", path.join(work, "cert.pem")], { stdio: "ignore" })
-const fixture = fs.readFileSync(path.join(root, "test/e2e/slack-fixture.html"))
+// The fixture's first <head> script is a hostile page script (attacker.js): it tries to get at
+// CallScribe's private page<->extension channel and forges every kind of message on it.
+const attacker = fs.readFileSync(path.join(root, "test/e2e/attacker.js"), "utf8")
+const fixture = fs.readFileSync(path.join(root, "test/e2e/slack-fixture.html"), "utf8").replace("<!--ATTACKER-->", () => `<script>${attacker}</script>`)
 const server = https.createServer({ key: fs.readFileSync(path.join(work, "key.pem")), cert: fs.readFileSync(path.join(work, "cert.pem")) },
-  (req, res) => { res.writeHead(200, { "content-type": "text/html" }); res.end(fixture) })
+  (req, res) => { res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); res.end(fixture) })
 await new Promise((r) => server.listen(0, "127.0.0.1", r))
 const port = server.address().port
 
@@ -45,13 +48,15 @@ const ws = new WebSocket(wsUrl)
 await new Promise((r) => (ws.onopen = r))
 let id = 0
 const pending = new Map()
-ws.onmessage = (ev) => { const m = JSON.parse(ev.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id) } }
+const events = []
+ws.onmessage = (ev) => { const m = JSON.parse(ev.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id) } else if (m.method) events.push(m) }
 const send = (method, params = {}, sessionId) => new Promise((res) => { const i = ++id; pending.set(i, res); ws.send(JSON.stringify({ id: i, method, params, sessionId })) })
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 let ok = true
 const check = (cond, label) => { console.log((cond ? "PASS " : "FAIL ") + label); ok = ok && cond }
 
 // SCENARIO=muted-alone: no remote audio and you stay muted, so the recording must be silence.
+// It also runs with Spanish UI labels: mute detection must not depend on English text.
 const alone = process.env.SCENARIO === "muted-alone"
 console.log("scenario:", alone ? "muted-alone" : "muted-with-remote")
 const { result: { targetId } } = await send("Target.createTarget", { url: "about:blank" })
@@ -80,7 +85,17 @@ for (let i = 0; i < 20 && (await storedPos()) !== JSON.stringify(parkedPos); i++
   await sleep(100)
 }
 check((await storedPos()) === JSON.stringify(parkedPos), `overlayPos parked near the right edge before the call (${JSON.stringify(parkedPos)})`)
-await send("Page.navigate", { url: "https://app.slack.com/client/T000/C000" + (alone ? "?noremote" : "") }, sessionId)
+await send("Runtime.enable", {}, sessionId)
+await send("Page.navigate", { url: "https://app.slack.com/client/T000/C000" + (alone ? "?noremote&locale=es" : "") }, sessionId)
+// CallScribe's content-script world in the tab (where the adapter lives).
+const isolatedCtx = () => events.filter((e) => e.method === "Runtime.executionContextCreated" && e.sessionId === sessionId &&
+  e.params.context.auxData?.type === "isolated" && /CallScribe/.test(e.params.context.name)).map((e) => e.params.context.id).at(-1)
+const evalIsolated = async (expression) => (await send("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true, contextId: isolatedCtx() }, sessionId)).result?.result?.value
+// The live session id, as the popup would ask for it.
+const liveSessionId = () => swEval(`chrome.tabs.query({ url: "https://app.slack.com/*" }).then((ts) => Promise.all(ts.map((t) => chrome.tabs.sendMessage(t.id, { type: "tab-status" }).catch(() => null)))).then((r) => (r.find((x) => x && x.session) || {}).session?.id || null)`)
+const dbRead = (fn) => swEval(`new Promise((r) => { const q = indexedDB.open("callscribe"); q.onupgradeneeded = () => q.transaction.abort(); q.onsuccess = () => { const d = q.result; (${fn})(d, (v) => { d.close(); r(v) }) }; q.onerror = () => r(null) })`)
+const chunkRows = (sid) => dbRead(`(d, done) => { const q = d.transaction("chunks").objectStore("chunks").index("session").getAll(${JSON.stringify(sid)}); q.onsuccess = () => done(q.result.map((c) => ({ seq: c.seq, size: c.bytes.byteLength || c.bytes.length, head: Array.from(new Uint8Array(c.bytes.buffer || c.bytes).slice(0, 4)) }))) }`)
+const sessionRow = (sid) => dbRead(`(d, done) => { const q = d.transaction("sessions").objectStore("sessions").get(${JSON.stringify(sid)}); q.onsuccess = () => done(q.result ? { audio: q.result.audio, audioLog: q.result.audioLog, endedAt: q.result.endedAt } : null) }`)
 const hostRect = () => evalPage(`(()=>{const h=document.getElementById('callscribe-overlay'); if(!h) return null; const r=h.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, vw: innerWidth, vh: innerHeight }})()`)
 const setShowOverlay = (on) => send("Runtime.evaluate", { expression: `chrome.storage.local.get("settings").then((r) => chrome.storage.local.set({ settings: { ...(r.settings || {}), showOverlay: ${on} } }))`, awaitPromise: true }, sws)
 // The overlay's host element exposes its state as attributes (its shadow root is closed).
@@ -119,12 +134,27 @@ let clicked = false
 let reattached = false
 let worstOverflow = 0
 let pillChecks = 0
+let attack = null // { id, chunksAt }
 for (let i = 0; i < 40; i++) {
   await sleep(1000)
   fixtureLog = (await evalPage("window.__log || []")) || []
   if (fixtureLog.includes("left")) break
   const box = await evalPage(`(()=>{const e=document.querySelector('.p-huddle_closed_captions'); if(!e||!e.textContent) return null; const r=e.getBoundingClientRect(); return r.right})()`)
   if (box !== null && box !== undefined) captionRight = box
+  // Mid-call: hand the hostile script the real session id (as if it had leaked) and let it forge
+  // chunks, stop, mic on, keepalive off and captions with it.
+  if (!attack && fixtureLog.includes("joined")) {
+    const sid = await liveSessionId()
+    const rows = sid ? await chunkRows(sid) : null
+    if (sid && rows && rows.length) {
+      attack = { id: sid, chunksAt: rows.filter((c) => c.size > 100).length, at: Date.now() }
+      await evalPage(`window.__attack(${JSON.stringify(sid)})`)
+      check((await evalIsolated("CallScribe.adapters[0].selfMuted()")) === true,
+        `mute state read from a language-independent signal${alone ? " (Spanish labels)" : ""}: muted`)
+    }
+  }
+  // Real recorder chunks only (the forged ones are 16 bytes).
+  if (attack && !attack.later && Date.now() - attack.at > 6500) attack.later = (await chunkRows(attack.id)).filter((c) => c.size > 100).length
   const ov = await overlayInfo()
   if (ov) overlayShown = true
   if (ov && /Morning everyone|Sure, I pushed|Great, ship it/.test(ov.latest || "")) overlayLatest = true
@@ -205,6 +235,25 @@ check(pillChecks > 0 && worstOverflow <= 0, `pill parked at the right edge stays
 console.log("fixture:", fixtureLog.join(" | "))
 check(await waitOverlay(false, 6000), "overlay removed after the call")
 
+// The hostile page script: nothing of the private channel reached it, and its forgeries changed nothing.
+const atk = await evalPage("window.__atk")
+console.log("attacker:", JSON.stringify(atk))
+check(Boolean(attack), "attack ran mid-call with the real session id")
+check(atk && atk.forged > 3, "attacker forged messages repeatedly during the call")
+check(atk && atk.ports === 0 && atk.nodes === 0 && atk.nodeEvents === 0, "attacker could not obtain the private channel (no port, no endpoint, its own endpoint got nothing)")
+check(atk && atk.audioBytes === 0 && atk.messages === 0 && atk.detailReads === 0 && atk.protoHits === 0 && atk.blobReads === 0, "attacker read no CallScribe traffic or audio")
+check(atk && atk.sessionIds.length === 0, "attacker saw no session id")
+if (attack) {
+  check(attack.later > attack.chunksAt, `recording kept going after forged stops (chunks ${attack.chunksAt} -> ${attack.later})`)
+  const rows = await chunkRows(attack.id)
+  const row = await sessionRow(attack.id)
+  check(rows.length > 0 && rows.every((c, i) => c.seq === i), "stored chunks are the recorder's own sequence (no forged seq)")
+  check(rows.length > 0 && rows[0].head.join(",") === "26,69,223,163", "first stored chunk is a real WebM header, not forged bytes")
+  check(rows.every((c) => c.size !== 16), "no forged 16-byte chunk stored")
+  check(row && row.audio && row.audio.chunks === rows.length, `session chunk count matches stored rows (${row && row.audio && row.audio.chunks} / ${rows.length})`)
+  check(row && !JSON.stringify(row.audioLog || []).includes("spoofed"), "no forged log entry")
+}
+
 const deadline = Date.now() + 30000
 let files = []
 while (Date.now() < deadline) {
@@ -243,7 +292,14 @@ if (md) {
 }
 if (audio) {
   const f = path.join(downloads, "CallScribe", audio)
-  const dur = Number(execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", f]).toString().trim() || 0)
+  let dur = NaN
+  let readable = true
+  try {
+    dur = Number(execFileSync("ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", f]).toString().trim() || 0)
+  } catch {
+    readable = false
+  }
+  check(readable, "audio file is readable (ffprobe)")
   // ffprobe may not know webm duration without a full decode; decode to measure.
   const stats = execFileSync("sh", ["-c", `ffmpeg -hide_banner -i "${f}" -af volumedetect -f null - 2>&1 | grep -E "mean_volume|max_volume|time="| tail -3`]).toString()
   console.log("audio:", fs.statSync(f).size, "bytes;", "ffprobe duration", dur, "\n" + stats)

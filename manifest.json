@@ -57,6 +57,16 @@
     },
     {
       "matches": [
+        "https://meet.google.com/*",
+        "https://app.slack.com/*"
+      ],
+      "js": [
+        "src/content/bridge.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
         "https://meet.google.com/*"
       ],
       "js": [

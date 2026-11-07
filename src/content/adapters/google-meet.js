@@ -28,6 +28,13 @@
     return band
   }
 
+  function micButton() {
+    for (const b of document.querySelectorAll("button[data-is-muted]")) {
+      for (const i of b.querySelectorAll(".google-symbols, .material-icons-extended, i")) if (/^mic(_off|_none)?$/.test(i.textContent.trim())) return b
+    }
+    return null
+  }
+
   function selfName() {
     const b = [...document.querySelectorAll("button[aria-label^='More options for ']")][0]
     return b ? b.getAttribute("aria-label").replace("More options for ", "").trim() : ""
@@ -185,12 +192,23 @@
       return code ? code[1] : ""
     },
 
-    /** true = muted, false = live, undefined = can't tell */
+    /**
+     * true = muted, false = live, undefined = can't tell (the mic is then not recorded).
+     * Meet's mic button carries data-is-muted and a "mic"/"mic_off" icon in every UI language
+     * (the camera button has data-is-muted too, so the icon picks the right one). The English
+     * labels are only a fallback.
+     */
     selfMuted() {
+      const v = micButton()?.getAttribute("data-is-muted")
+      if (v === "true" || v === "false") return v === "true"
       if (document.querySelector('button[aria-label^="Turn on microphone"]')) return true
       if (document.querySelector('button[aria-label^="Turn off microphone"]')) return false
-      const b = document.querySelector("button[data-is-muted]")
-      return b ? b.getAttribute("data-is-muted") === "true" : undefined
+      return undefined
+    },
+
+    /** The control that mutes/unmutes you (a press on it closes the mic gate at once). */
+    micToggle() {
+      return micButton() || document.querySelector('button[aria-label^="Turn on microphone"], button[aria-label^="Turn off microphone"]')
     },
 
     captionsOn() {

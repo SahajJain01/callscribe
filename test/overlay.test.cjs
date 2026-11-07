@@ -234,3 +234,10 @@ test("overlayModel: no captions button on the Meet feed, before captions, or whe
   assert.equal(overlayModel({ ...base, source: "none" }, 1000).captionToggle, null)
   assert.equal(overlayModel({ ...base, source: "cc", canHideCaptions: false }, 1000).captionToggle, null)
 })
+
+test("overlayModel: orphaned after an update, the pill only carries the reload warning (runtime I1 / lifecycle F7)", () => {
+  const m = overlayModel({ orphan: "CallScribe was updated. Reload this tab to keep recording" }, T0)
+  assert.equal(m.orphan, "CallScribe was updated. Reload this tab to keep recording")
+  assert.equal(m.dotWarn, true)
+  assert.equal(m.latest, null)
+})

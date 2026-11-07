@@ -1,10 +1,13 @@
 <!doctype html>
 <html>
-<head><meta charset="utf-8" /><title>Fixture huddle</title></head>
+<head><!--ATTACKER--><meta charset="utf-8" /><title>Fixture huddle</title></head>
 <body>
 <!-- You stay muted (mic switch off) for the whole fixture, so any sound in the recording
      must come from the remote WebRTC track. -->
-<!-- Mimics the Slack web client's huddle markup (selectors from OpenClaw's slack-huddles plugin). -->
+<!-- Mimics the Slack web client's huddle markup (selectors from OpenClaw's slack-huddles plugin).
+     ?locale=es: Spanish UI labels, so mute detection can't lean on English text.
+     ?manual: nothing happens until the test calls window.__join() / window.__leave().
+     The e2e servers replace the ATTACKER comment in <head> with a hostile inline script (attacker.js). -->
 <div data-qa="channel_name_button">design-team</div>
 <div id="huddle"></div>
 <script>
@@ -37,17 +40,35 @@ function caption(speaker, text, wrapper) {
   return w
 }
 
-async function run() {
-  await navigator.mediaDevices.getUserMedia({ audio: true }) // fake mic (beep) via Chrome flags
-  if (!location.search.includes("noremote")) await remoteAudio()
+const es = location.search.includes("locale=es")
+// The page's own animation loop: the e2e counts its frames to see whether the render keepalive runs.
+window.__frames = 0
+const raf = window.requestAnimationFrame.bind(window)
+const loop = () => { window.__frames++; raf(loop) }
+raf(loop)
+
+function join() {
   document.getElementById("huddle").innerHTML = `
     <div data-qa="huddle_window_titlebar_title">Huddle in #design-team</div>
     <div data-qa="huddle_toolbar_buttons_center">
-      <button role="switch" aria-label="Microphone" aria-checked="false">Mic</button>
-      <button data-qa="huddle_toolbar__leave_button">Leave</button>
+      <button role="switch" aria-label="${es ? "Micrófono" : "Microphone"}" aria-describedby="microphone-info" aria-checked="false">Mic</button>
+      <span id="microphone-info" hidden>Fake Audio Input</span>
+      <button data-qa="huddle_toolbar__leave_button">${es ? "Salir" : "Leave"}</button>
     </div>
     <div class="p-huddle_closed_captions"></div>`
   log("joined")
+}
+window.__join = join
+window.__leave = () => { document.getElementById("huddle").innerHTML = ""; log("left") }
+let media = null
+window.__media = () => media || (media = (async () => {
+  await navigator.mediaDevices.getUserMedia({ audio: true }) // fake mic (beep) via Chrome flags
+  if (!location.search.includes("noremote")) await remoteAudio()
+})())
+
+async function run() {
+  await window.__media()
+  join()
   await sleep(2500)
   const r1 = caption("Alice Nguyen", "Morning everyone")
   await sleep(600); caption("Alice Nguyen", "Morning everyone, let us look at", r1)
@@ -64,7 +85,8 @@ async function run() {
   document.getElementById("huddle").innerHTML = "" // leave the huddle
   log("left")
 }
-run().catch((e) => log("fixture error " + e))
+if (location.search.includes("manual")) window.__media().then(() => log("ready"), (e) => log("fixture error " + e))
+else run().catch((e) => log("fixture error " + e))
 </script>
 </body>
 </html>

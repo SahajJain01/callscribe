@@ -1,6 +1,8 @@
 // In-call overlay: a draggable pill with the elapsed time and the latest caption, which
 // expands into a status row plus a scrollable transcript. Pure helpers (overlayModel,
 // clampPos, formatElapsed, renderRows) are unit-tested in Node; createOverlay is the DOM part.
+// update({ orphan: message }) turns it into a warning-only pill that doesn't expand
+// (extension updated mid-call; host data-state="orphaned"). That needs only the DOM.
 ;(function (root) {
   "use strict"
 
@@ -46,7 +48,12 @@
 
   // warn: caption silence. dotWarn: anything the collapsed pill should flag (caption silence,
   // audio error, audio stuck starting). A muted mic is normal for most of a call, so it isn't.
+  // state.orphan (a message): the extension was updated mid-call and this tab no longer records.
+  // The pill then carries only that warning.
   function overlayModel(state, now) {
+    if (state.orphan) {
+      return { orphan: String(state.orphan), elapsed: "", latest: null, warn: true, dotWarn: true, status: [], captionToggle: null }
+    }
     const startedAt = state.startedAt || now
     const lines = state.lines || []
     const warn = now - startedAt > SILENCE_MS && now - (state.lastCaptionAt || startedAt) > SILENCE_MS
@@ -168,7 +175,7 @@
     const pill = el("div", "box pill", shadow)
     const pDot = el("span", "dot", pill)
     const pEl = el("span", "el", pill, "0:00")
-    el("span", "sep", pill, "·")
+    const pSep = el("span", "sep", pill, "·")
     const pSp = el("span", "sp", pill)
     const pTail = el("span", "tail wait", pill)
     const pTailText = el("span", null, pTail, "waiting for captions…")
@@ -193,6 +200,7 @@
     let dragged = false
     let removed = false
     let last = null // last state, for re-rendering on expand
+    let orphan = false // warning-only pill: no expanding
     const seen = {} // cache of last written values for the cheap update path
 
     const set = (key, node, value) => {
@@ -245,9 +253,23 @@
       jump.hidden = follow
     }
 
+    function renderOrphan(m) {
+      if (expanded) toggle()
+      orphan = true
+      pDot.className = cDot.className = seen.dot = "dot warn"
+      pEl.hidden = pSep.hidden = true
+      set("sp", pSp, "")
+      set("tail", pTailText, m.orphan)
+      pTail.className = seen.tailCls = "tail wait"
+      attr("data-latest", "")
+      attr("data-state", "orphaned")
+      placeIfResized()
+    }
+
     function render(state) {
       const now = Date.now()
       const m = overlayModel(state, now)
+      if (m.orphan) return renderOrphan(m)
       const dotCls = m.dotWarn ? "dot warn" : "dot"
       if (seen.dot !== dotCls) {
         seen.dot = dotCls
@@ -288,6 +310,7 @@
     }
 
     function toggle() {
+      if (orphan && !expanded) return
       expanded = !expanded
       pill.hidden = expanded
       card.hidden = !expanded

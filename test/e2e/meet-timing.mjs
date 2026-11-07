@@ -32,9 +32,13 @@ if (process.env.WITHOUT_KEEPALIVE) {
 
 execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=meet.google.com",
   "-keyout", path.join(work, "key.pem"), "-out", path.join(work, "cert.pem")], { stdio: "ignore" })
-const fixture = fs.readFileSync(path.join(repo, "test/e2e/meet-fixture.html"))
+// First <head> script: a hostile page script (attacker.js) armed with real captions_v2 frames
+// from a different call, which it forges as a caption feed; it also keeps forging keepalive-off.
+const forgedFrames = JSON.parse(fs.readFileSync(path.join(repo, "test/fixtures/meet-captions-v2.json"), "utf8")).subscribed.filter((m) => m.dir === "in").map((m) => m.b64)
+const attacker = `window.__forgedFrames = ${JSON.stringify(forgedFrames)};\n` + fs.readFileSync(path.join(repo, "test/e2e/attacker.js"), "utf8")
+const fixture = fs.readFileSync(path.join(repo, "test/e2e/meet-fixture.html"), "utf8").replace("<!--ATTACKER-->", () => `<script>${attacker}</script>`)
 const server = https.createServer({ key: fs.readFileSync(path.join(work, "key.pem")), cert: fs.readFileSync(path.join(work, "cert.pem")) },
-  (req, res) => { res.writeHead(200, { "content-type": "text/html" }); res.end(fixture) })
+  (req, res) => { res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); res.end(fixture) })
 await new Promise((r) => server.listen(0, "127.0.0.1", r))
 fs.mkdirSync(path.join(work, "profile/Default"), { recursive: true })
 fs.writeFileSync(path.join(work, "profile/Default/Preferences"), JSON.stringify({ download: { default_directory: downloads, prompt_for_download: false } }))
@@ -48,7 +52,8 @@ const wsUrl = await new Promise((res, rej) => { let b = ""; proc.stderr.on("data
 const ws = new WebSocket(wsUrl)
 await new Promise((r) => (ws.onopen = r))
 let id = 0; const pending = new Map()
-ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id) } }
+const events = []
+ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id) } else if (m.method) events.push(m) }
 const send = (method, params = {}, sessionId) => new Promise((res) => { const i = ++id; pending.set(i, res); ws.send(JSON.stringify({ id: i, method, params, sessionId })) })
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 let ok = true
@@ -64,6 +69,10 @@ const vis = await evalPage(`new Promise(r=>{let n=0;const f=()=>{n++;requestAnim
 console.log("fixture tab visibility:", vis)
 check(vis === "hidden", "fixture runs in a hidden tab (rAF stalled)")
 
+await send("Runtime.enable", {}, sessionId)
+const isolatedCtx = () => events.filter((e) => e.method === "Runtime.executionContextCreated" && e.sessionId === sessionId &&
+  e.params.context.auxData?.type === "isolated" && /CallScribe/.test(e.params.context.name)).map((e) => e.params.context.id).at(-1)
+let muteRead
 let log = []
 let overlaySeen = false
 for (let i = 0; i < 45; i++) {
@@ -71,8 +80,12 @@ for (let i = 0; i < 45; i++) {
   log = (await evalPage("window.__log")) || []
   if (log.includes("left")) break
   if (await evalPage("Boolean(document.getElementById('callscribe-overlay'))")) overlaySeen = true
+  if (muteRead === undefined && (await evalPage("Boolean(document.querySelector('button[data-is-muted]'))"))) {
+    muteRead = (await send("Runtime.evaluate", { expression: "CallScribe.adapters.find((a) => a.id === 'google-meet').selfMuted()", returnByValue: true, contextId: isolatedCtx() }, sessionId)).result?.result?.value
+  }
 }
 check(overlaySeen, "overlay present in the Meet fixture tab")
+check(muteRead === false, `mic state read from data-is-muted with German labels: unmuted (${muteRead})`)
 const truth = (await evalPage("window.__truth")) || []
 console.log("fixture:", log.join(" | "), "| turns:", truth.length)
 
@@ -101,11 +114,19 @@ if (files.length) {
     check(turns[i].text.startsWith(truth[i].firstWords) && Math.abs(got - want) <= 3,
       `turn ${i + 1} "${truth[i].firstWords}..." at ${got}s, really arrived at ${want.toFixed(1)}s`)
   }
+  check(!/Bananas are yellow|weather in Hanoi|first test of the caption/.test(md), "no forged caption-feed text in the transcript")
   if (turns.length === truth.length) {
     const last = turns[turns.length - 1]
     check(last.text.includes("bye everyone"), "final caption (arrived just before leaving) flushed in full")
   }
 }
+
+const atk = await evalPage("window.__atk")
+console.log("attacker:", JSON.stringify(atk))
+check(atk && atk.forged > 5, "attacker forged caption feeds and keepalive-off during the call")
+check(atk && atk.ports === 0 && atk.nodes === 0 && atk.nodeEvents === 0, "attacker could not obtain the private channel")
+check(atk && atk.audioBytes === 0 && atk.messages === 0 && atk.detailReads === 0 && atk.protoHits === 0 && atk.sessionIds.length === 0,
+  "attacker read no CallScribe traffic (captions, audio, session id)")
 
 await send("Browser.close").catch(() => {})
 proc.kill(); server.close()
