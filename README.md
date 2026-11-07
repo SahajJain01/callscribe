@@ -8,9 +8,12 @@ no API keys.
 When a call ends, two files land in `Downloads/CallScribe/`:
 
 ```
-2026-11-04_1823_Google-Meet_weekly-sync.md     transcript, speaker turns with time offsets
-2026-11-04_1823_Google-Meet_weekly-sync.webm   audio backup (Opus), same clock as the transcript
+2026-11-04_1823_Google-Meet_weekly-sync_k3x9q.md     transcript, speaker turns with time offsets
+2026-11-04_1823_Google-Meet_weekly-sync_k3x9q.webm   audio backup (Opus), same clock as the transcript
 ```
+
+The audio is WebM, or Ogg (`.ogg`) in a browser that can't record WebM. The last part of the
+name is a short call id, so two calls never share a file name.
 
 ## Install
 
@@ -28,31 +31,60 @@ Works in Chrome, Edge, Brave and other Chromium browsers. Slack huddles must be 
 ## Use
 
 - **Google Meet**: join the call. CallScribe starts recording when the call starts and gets
-  captions from Meet's caption feed directly, so you don't need to turn on CC and nothing is
-  drawn over the call. If the feed doesn't start within a few seconds, it falls back to
+  captions from Meet's caption feed directly, so you don't need to turn on CC and Meet's
+  caption box stays off. If the feed doesn't start within a few seconds, it falls back to
   turning Meet's captions on (setting) and reading them from the page.
-- **Slack huddle**: join the huddle in app.slack.com and turn on captions (CC in the huddle
-  window). To have them on every time: Slack Preferences → Audio & video → turn on captions
-  by default when joining huddles.
-- The toolbar icon shows **REC** during a call. The popup shows the live line count and audio
-  size, lists recent calls with Transcript / Audio download buttons, and has the settings.
+- **Slack huddle**: join the huddle in app.slack.com. With "Turn captions on automatically"
+  on (the default), CallScribe clicks the huddle's CC button for you. Otherwise turn on
+  captions yourself (CC in the huddle window), or set Slack Preferences → Audio & video →
+  turn on captions by default when joining huddles.
+- The toolbar icon shows **REC** during a call. A small overlay on the call shows that it's
+  recording (see Overlay below).
+- The popup shows the live line count and audio size, and lists every call stored in the
+  browser, 50 at a time (**Show more** for older ones). Each call has Transcript / Audio /
+  Delete buttons and shows whether its files were saved. A call that wasn't saved (a failed or
+  canceled download, or auto-save off) says **Not saved** and has a **Save again** (or **Save
+  to Downloads**) button.
 
 Settings (popup → Settings): auto-enable captions, hide captions on screen (on by default; the
 box is moved off-screen but still read, so the transcript is unaffected; in Meet the video tiles
-expand into the space captions would take), record audio, include my microphone,
-auto-save files when a call ends. With auto-save off, use the popup buttons.
+expand into the space captions would take), show recording overlay, record audio, include my
+microphone, auto-save files when a call ends. With auto-save off, use the popup buttons.
+
+Your microphone is recorded only while the call page shows you are unmuted. If CallScribe
+can't tell (for example, it can't find the mute button), your mic is not recorded.
+
+### Keeping and deleting calls
+
+- A call is deleted from the browser 30 days after all its files (transcript, and audio if
+  any) are saved to Downloads. Files in Downloads are yours and are never touched.
+- A call whose files were never saved (auto-save off, a failed download, or a download you
+  canceled) stays until you delete it. A canceled download isn't retried; use **Save again**.
+- A failed download is retried a few times (after 15 s, 1, 5 and 15 minutes), then the call
+  shows **Not saved**.
+
+### If Chrome or the tab crashes
+
+The call is saved as it goes. If a call's tab stops answering for 2 minutes, or is gone
+after Chrome restarts, the call is ended at its last saved update. With auto-save on, its
+files are saved on the next check (when Chrome starts, or every 2 minutes). If saving was
+cut off halfway, it resumes where it stopped, and each file is saved once.
+
+If the extension is updated or reloaded during a call, the open tab stops recording and the
+overlay says "CallScribe was updated. Reload this tab to keep recording".
 
 ## How it works
 
 | Part | File | What it does |
 |---|---|---|
-| Audio hook | `src/page/audio-hook.js` | Runs in the page before the call app loads. Notes every incoming WebRTC audio track and the microphone the app opens, mixes them with Web Audio and records Opus chunks (5 s). It changes nothing the app sends or plays. Your mic goes through a gate that follows the app's mute button, so nothing is recorded while you're muted. |
+| Audio hook | `src/page/audio-hook.js` | Runs in the page before the call app loads. Notes every incoming WebRTC audio track and the microphone the app opens, mixes them with Web Audio and records Opus chunks (5 s), as WebM or, if the browser can't, Ogg. It changes nothing the app sends or plays. Your mic goes through a gate that starts closed and opens only while the app's mute button says you're unmuted, so nothing is recorded while you're muted or when the mute state is unknown. |
+| Page bridge | `src/content/bridge.js` | Gives the page scripts a private channel to the content script before any page script runs, so the call page can't send fake caption-feed messages or audio chunks. |
 | Meet caption feed | `src/page/meet-channels.js`, `src/shared/meet-proto.js` | Meet's server transcribes every call and streams captions on a WebRTC data channel (`captions_v2`) to any client that asks. The page tap forwards that channel's messages to the content script and sends the same "captions on" request the CC button sends, so captions arrive with CC off, live even in a hidden tab. Each update carries an utterance's full current text, a version and the speaker's device id (named from the participant tiles or Meet's `collections` channel). If you turn CC off in Meet (which stops the feed), CallScribe asks again. |
 | Render keepalive | `src/page/render-keepalive.js` | Meet applies caption updates in `requestAnimationFrame`, which Chrome stops running when the tab isn't drawn (background tab, minimized window, Companion-mode tab). During a call, each animation frame gets a fallback timer so captions keep reaching the page, and get timestamped, while the tab is hidden. |
-| Watcher | `src/content/main.js` | Picks the adapter for the site, detects call start/end, takes captions from the platform's feed (Meet) or reads caption rows from the page, auto-enables captions as a fallback, forwards mute state and audio chunks. |
-| Overlay | `src/content/overlay.js` | A small draggable pill at the top of the call (elapsed time and the latest caption) that expands into a status row (caption source, audio, mic, lines) and a scrollable live transcript. Drawn in a closed shadow root, never takes keyboard focus, and only shown while a call is being recorded. Turn it off with "Show recording overlay on the call". |
+| Watcher | `src/content/main.js` | Picks the adapter for the site, detects call start/end, takes captions from the platform's feed (Meet) or reads caption rows from the page, auto-enables captions (in Meet only as a fallback), forwards mute state and audio chunks. |
+| Overlay | `src/content/overlay.js` | A small draggable pill at the top of the call (elapsed time and the latest caption) that expands into a status row (caption source, audio, mic, lines) and a live transcript you can scroll back through to the start of the call. When captions are read from the page (CC), the status row has a **Hide on page** / **Show on page** button for the same setting as the popup's. Audio shows **save failed** if the browser couldn't store the audio. Drawn in a closed shadow root, never takes keyboard focus, and only shown while a call is being recorded (or to say the tab must be reloaded after an update). Turn it off with "Show recording overlay on the call". |
 | Caption merging | `src/shared/merge.js` | Caption UIs rewrite rows as recognition improves and trim long rows. Rows are merged with word-level fuzzy alignment so corrections replace text instead of duplicating it. |
-| Storage/export | `src/background/index.js`, `src/shared/db.js` | IndexedDB keeps the transcript and audio chunks as they stream in, so a crash or closed tab loses at most a few seconds. On call end (or tab close / stale session) it writes the `.md` and `.webm`. |
+| Storage/export | `src/background/index.js`, `src/shared/db.js`, `src/shared/lifecycle.js` | IndexedDB keeps the transcript and audio chunks as they stream in, so a crash or closed tab loses at most a few seconds. On call end (or tab close / stale session) it saves the audio (`.webm` or `.ogg`), then the `.md`. Only a download Chrome reports as complete counts as saved. The save is a job stored with the call, so it resumes after a restart. A sweep (Chrome start, install, every 2 minutes) ends stale calls, resumes saves and deletes calls 30 days after all their files were saved. |
 
 ## Adding a platform
 
@@ -67,15 +99,16 @@ Each platform is one small adapter file in `src/content/adapters/`, registered o
   title: () => "meeting name",
   captionsOn: () => Boolean(/* caption container present */),
   enableCaptions() { /* optional: click the CC button */ },
-  selfMuted: () => true | false | undefined,   // gates your mic in the audio backup
+  selfMuted: () => true | false | undefined,   // gates your mic: recorded only on false
   captionRows: () => [{ key: rowElement, speaker: "Name", text: "what they said" }],
   hints: { captionsOff: "How to turn captions on" },
 }
 ```
 
 Then add the host to `host_permissions` and a `content_scripts` entry in `manifest.json`
-(`merge.js`, your adapter, `main.js`), and the host to the audio-hook entry. Audio capture
-is generic: any call app that uses WebRTC in the page works without platform code.
+(`merge.js`, your adapter, `overlay.js`, `main.js`), and the host to the audio-hook and
+`bridge.js` entries. Audio capture is generic: any call app that uses WebRTC in the page
+works without platform code.
 
 ## Tests
 
@@ -83,7 +116,9 @@ is generic: any call app that uses WebRTC in the page works without platform cod
 npm test        # unit tests: caption merging (incl. a real Meet caption sequence), tracker, formatting
 npm run e2e     # loads the extension in headless Chromium against a fake Slack huddle served as
                 # https://app.slack.com: checks transcript, speakers, trimmed rows, remote audio
-                # recorded while muted, and silence when muted and alone
+                # recorded while muted, and silence when muted and alone; also recorder, export,
+                # upgrade, overlay and Meet timing/layout checks
+npm run e2e:crash  # kills Chromium mid-call, restarts it: the call is saved once, completely
 node test/live/meet-live.mjs <tabTargetId> <outDir> [secs]
                 # live check against real Google Meet in a Chrome with --remote-debugging-port=9222
                 # (injects the extension scripts with a chrome.* stand-in; no install needed)

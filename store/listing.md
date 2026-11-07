@@ -11,18 +11,20 @@ CallScribe saves your Google Meet calls and Slack huddles as a written transcrip
 
 HOW IT WORKS
 • Join a call in Google Meet, or a huddle in the Slack web app (app.slack.com).
-• In Meet you don't need to turn captions on: CallScribe receives Meet's live captions in the background, so nothing covers your call. In Slack, turn on captions in the huddle once (or set Slack to show captions by default).
+• In Meet you don't need to turn captions on: CallScribe receives Meet's live captions in the background, so Meet's caption box stays off. In Slack, CallScribe turns the huddle's captions on for you (you can switch this off in Settings).
+• A small overlay on the call shows it's recording, with the latest caption. Click it to see the live transcript.
 • When the call ends, two files are saved to Downloads/CallScribe:
   – a Markdown transcript: who said what, with timestamps
-  – a WebM audio recording of the call, on the same clock as the transcript
+  – an audio recording of the call (WebM, or Ogg in browsers that can't record WebM), on the same clock as the transcript
 
 FEATURES
 • Starts and stops by itself when you join and leave a call
 • Speaker names from Meet and Slack captions, with corrections merged so nothing is repeated
-• Audio backup of everyone in the call, including you while you're unmuted (never while you're muted)
+• Audio backup of everyone in the call, including you only while the call shows you're unmuted (never while you're muted, or when CallScribe can't tell)
 • Captions can stay hidden on screen and are still saved
-• Recent calls list in the popup with Transcript / Audio / Delete buttons
-• Saves as the call goes, so a crash or closed tab doesn't lose the call
+• Every stored call is listed in the popup with Transcript / Audio / Delete buttons
+• Saves as the call goes, so a crash or closed tab doesn't lose the call. After a crash the call is ended and saved on the next check (within a few minutes, or when Chrome starts again)
+• A call is removed from the browser 30 days after its files are saved to Downloads. Calls that weren't saved stay until you delete them
 
 PRIVATE BY DESIGN
 • No account, no server, no analytics. Nothing is uploaded anywhere.
@@ -39,11 +41,11 @@ NOTES
 Save a transcript (from the platform's own live captions) and an audio backup of the user's Google Meet calls and Slack huddles to the user's computer.
 
 **Permission justifications:**
-- storage: Stores the user's settings (record audio, hide captions, etc.) and the in-progress call list in extension storage.
-- unlimitedStorage: Calls are saved locally as they happen (transcript and audio chunks) so a crash doesn't lose them. An hour of audio is about 20 MB, which can exceed the default quota.
-- downloads: Saves the finished transcript (.md) and audio (.webm) into the user's Downloads/CallScribe folder when a call ends or when the user clicks Transcript/Audio in the popup.
+- storage: Stores the user's settings (record audio, hide captions, etc.) and the overlay's position in extension storage.
+- unlimitedStorage: Each call (transcript and audio chunks) is kept in the browser's local database as it happens, so a crash doesn't lose it. A call is deleted 30 days after all its files are saved to Downloads; a call that wasn't saved stays until the user deletes it in the popup. An hour of audio is about 20 MB, which can exceed the default quota.
+- downloads: Saves the finished transcript (.md) and audio (.webm or .ogg) into the user's Downloads/CallScribe folder when a call ends or when the user clicks Transcript/Audio/Save again in the popup, and checks that each download completed.
 - offscreen: The service worker can't create blob URLs. An offscreen document assembles the stored audio chunks into one file so it can be downloaded.
-- alarms: A periodic check finalizes and saves calls whose tab crashed or closed without a normal end.
+- alarms: A periodic check finalizes and saves calls whose tab crashed or closed without a normal end, retries failed saves, and deletes calls 30 days after their files were saved.
 - Host permission meet.google.com and app.slack.com: The content scripts run only on these two call sites. They read the call's live captions (in Meet, the caption feed Meet's servers send to the browser, requested the same way Meet's CC button does; in Slack, the captions shown on the page) and record the call audio the browser already receives. No other sites are accessed.
 
 **Remote code:** No, I am not using remote code. All JavaScript ships in the package.
@@ -70,4 +72,4 @@ Save a transcript (from the platform's own live captions) and an audio backup of
 - Screenshots (1280×800): store/out/shot1.png, store/out/shot2.png
 - Small promo tile (440×280): store/out/promo-small.png
 - Marquee promo tile (1400×560): store/out/promo-marquee.png
-- Package: store/callscribe-0.1.0.zip (build with store/package.sh)
+- Package: build with store/package.sh from the commit being published. It writes store/callscribe-<version>.zip from manifest.json, icons, src and LICENSE; upload that fresh zip, not an older one in store/.

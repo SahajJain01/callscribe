@@ -1,6 +1,6 @@
 # CallScribe privacy policy
 
-_Last updated: 4 November 2026_
+_Last updated: 8 November 2026_
 
 CallScribe is a browser extension that saves transcripts and audio recordings of your
 Google Meet calls and Slack huddles **on your own computer**. This policy explains what it
@@ -15,7 +15,8 @@ While you are in a call on meet.google.com or app.slack.com, CallScribe reads:
   same way Meet's CC button does); in Slack, the captions shown on the page.
   Participant names come from the call page.
 - **Call audio**: the audio of the other participants that your browser already receives,
-  and your own microphone while you are unmuted in the call.
+  and your own microphone only while the call page shows you are unmuted. If CallScribe can't
+  tell whether you are muted, your microphone is not recorded.
 - **Call details**: the meeting or huddle title, the page address, and start/end times.
 
 It does not read any other websites, your browsing history, emails, messages, or files.
@@ -24,6 +25,10 @@ It does not read any other websites, your browsing history, emails, messages, or
 
 - Everything is stored **locally in your browser** (extension storage on your device) and,
   when a call ends, saved as files in your **Downloads/CallScribe** folder.
+- A call is deleted from the browser 30 days after all of its files (the transcript, and the
+  audio if there is any) were saved to Downloads. A call whose files were not saved
+  (automatic saving off, a failed or canceled download) stays in the browser until you
+  delete it.
 - CallScribe has **no server**. It does not send call content, transcripts, audio,
   analytics, or any other data to the developer or to any third party.
 - It does not use cookies, trackers, or advertising, and it does not sell or share data.
@@ -32,9 +37,9 @@ It does not read any other websites, your browsing history, emails, messages, or
 
 - You can turn audio recording, microphone recording, and automatic saving on or off in the
   extension's popup.
-- You can delete any saved call from the popup. Uninstalling the extension deletes
-  everything it stored inside the browser. Files already saved to your Downloads folder are
-  ordinary files that you manage yourself.
+- The popup lists every call stored in the browser, and you can delete any of them there.
+  Uninstalling the extension deletes everything it stored inside the browser. Files already
+  saved to your Downloads folder are ordinary files that you manage yourself.
 
 ## Recording other people
 
