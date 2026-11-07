@@ -1,3 +1,4 @@
 node_modules/
 *.zip
 store/out/_page.html
+.superpowers/
