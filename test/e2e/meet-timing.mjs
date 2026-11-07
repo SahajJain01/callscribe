@@ -52,7 +52,7 @@ fs.writeFileSync(path.join(work, "profile/Default/Preferences"), JSON.stringify(
 const proc = spawn(chrome, ["--headless=new", `--user-data-dir=${path.join(work, "profile")}`, "--no-first-run",
   `--disable-extensions-except=${ext}`, `--load-extension=${ext}`,
   `--host-resolver-rules=MAP meet.google.com 127.0.0.1:${server.address().port}`, "--ignore-certificate-errors",
-  "--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream", "--remote-debugging-port=0", "about:blank"],
+  "--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream", "--autoplay-policy=no-user-gesture-required", "--remote-debugging-port=0", "about:blank"],
   { stdio: ["ignore", "ignore", "pipe"] })
 const wsUrl = await new Promise((res, rej) => { let b = ""; proc.stderr.on("data", (d) => { b += d; const m = b.match(/DevTools listening on (ws:\S+)/); if (m) res(m[1]) }); setTimeout(() => rej(new Error(b)), 20000) })
 const ws = new WebSocket(wsUrl)
@@ -60,7 +60,12 @@ await new Promise((r) => (ws.onopen = r))
 let id = 0; const pending = new Map()
 const events = []
 ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id) } else if (m.method) events.push(m) }
-const send = (method, params = {}, sessionId) => new Promise((res) => { const i = ++id; pending.set(i, res); ws.send(JSON.stringify({ id: i, method, params, sessionId })) })
+const send = (method, params = {}, sessionId) => new Promise((res, rej) => {
+  const i = ++id
+  const t = setTimeout(() => { pending.delete(i); rej(new Error(`CDP ${method} timed out after 30s`)) }, 30000)
+  pending.set(i, (v) => { clearTimeout(t); res(v) })
+  ws.send(JSON.stringify({ id: i, method, params, sessionId }))
+})
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 let ok = true
 const check = (cond, label) => { console.log((cond ? "PASS " : "FAIL ") + label); ok = ok && cond }

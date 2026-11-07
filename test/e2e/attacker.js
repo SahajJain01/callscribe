@@ -12,8 +12,8 @@
 // and dispatches forged open/message events (real captions_v2 frames) on data channels.
 // atk.hooked lists the patches installed and atk.selfTest counts each one firing on the
 // attacker's own objects, so the e2e can tell "nothing caught" from "patch never ran".
-// Against the code of commit 2c8662b (before the fix) these routes worked; see the Task 1
-// report, "Fix round 1", for that positive-control run.
+// Against the code of commit 2c8662b (before the fix) these routes worked: the Task 1
+// re-review (task-1-rereview-1) ran this attacker against that copy and every check failed.
 ;(function () {
   "use strict"
   const atk = (window.__atk = {
