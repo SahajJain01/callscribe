@@ -96,6 +96,10 @@ console.log("files:", files, `(${Math.round((Date.now() - crashAt - DOWN_MS) / 1
 const md = files.find((f) => f.endsWith(".md"))
 const audio = files.find((f) => f.endsWith(".webm") || f.endsWith(".ogg"))
 check(Boolean(md), "transcript recovered after the crash")
+await sleep(5000) // a second sweep (startup and an overdue alarm) would add a duplicate by now
+files = outFiles()
+check(files.filter((f) => f.endsWith(".md")).length === 1 && files.filter((f) => f.endsWith(".webm") || f.endsWith(".ogg")).length === 1,
+  `exactly one transcript and one audio file, no duplicates (lifecycle F4): ${JSON.stringify(files)}`)
 check(Boolean(audio), "audio recovered after the crash")
 if (md) {
   const text = fs.readFileSync(path.join(outDir, md), "utf8")

@@ -1,7 +1,9 @@
 import { getChunks } from "../shared/db.js"
 
-chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
-  if (msg.target !== "offscreen") return false
+// Only the service worker talks to this page: nothing from a tab (content scripts), nothing
+// from another extension.
+chrome.runtime.onMessage.addListener((msg, sender, reply) => {
+  if (!msg || msg.target !== "offscreen" || sender.tab || sender.id !== chrome.runtime.id) return false
   if (msg.type === "make-url") {
     getChunks(msg.id)
       .then((rows) => {

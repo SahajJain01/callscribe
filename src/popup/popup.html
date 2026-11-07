@@ -27,13 +27,19 @@
   details { margin: 0 14px 12px; }
   summary { cursor: pointer; color: var(--muted); }
   .empty { padding: 4px 14px 12px; }
+  h2 .n { text-transform: none; letter-spacing: 0; font-weight: normal; }
+  #more { display: block; margin: 6px 0 4px; width: 100%; }
+  #more[hidden] { display: none; }
 </style>
 </head>
 <body>
   <header><h1>CallScribe</h1><span class="muted" id="ver"></span></header>
   <div class="card" id="now"><span class="muted">Checking this tab…</span></div>
-  <h2>Recent calls</h2>
+  <h2>Calls <span class="n" id="count"></span></h2>
+  <div class="empty muted" id="empty" hidden>Nothing yet. Calls show up here once they start.</div>
   <ul id="list"></ul>
+  <div style="padding: 0 14px"><button id="more" hidden>Show more</button></div>
+  <p class="muted" style="margin: 4px 14px 8px; font-size: 11px">A call is removed from the browser 30 days after its files were saved to Downloads. Calls that weren't saved stay until you delete them.</p>
   <details>
     <summary>Settings</summary>
     <label><input type="checkbox" data-k="autoCaptions" /> Turn captions on automatically</label>
