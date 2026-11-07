@@ -5,6 +5,8 @@
 // retention), so recovery and retention query them directly instead of scanning the newest
 // N rows. "tombstones" holds ids of deleted sessions so late writes for them are refused.
 
+import { migrateV1Row } from "./lifecycle.js"
+
 const DB_NAME = "callscribe"
 const VERSION = 2
 let dbp = null
@@ -25,12 +27,15 @@ export function db() {
         sessions.createIndex("todo", "todo")
         sessions.createIndex("exportDoneAt", "exportDoneAt")
         d.createObjectStore("tombstones", { keyPath: "id" })
-        // Rows from v1: unfinished calls become sweep work. Ended ones keep their old
-        // `exported` flag, which never confirmed a download, so they are never auto-deleted.
+        // Rows from v1 (migrateV1Row): unfinished calls, and ended calls the old version never
+        // exported, become sweep work. Ones it marked `exported` stay manual-only; that flag
+        // never confirmed a download, so they are never auto-deleted.
         sessions.openCursor().onsuccess = (e) => {
           const c = e.target.result
           if (!c) return
-          if (!c.value.endedAt) c.update({ ...c.value, todo: 1 })
+          const before = JSON.stringify([c.value.todo, c.value.legacy])
+          const row = migrateV1Row({ ...c.value })
+          if (JSON.stringify([row.todo, row.legacy]) !== before) c.update(row)
           c.continue()
         }
       }

@@ -102,18 +102,12 @@ function waitDownload(id, ms = DOWNLOAD_WAIT_MS) {
   })
 }
 
-/** A download this extension started for `name` (Folder/base.ext), possibly uniquified: the newest usable one. */
-async function findDownload(name) {
-  const want = name.split("/").pop()
-  const dot = want.lastIndexOf(".")
-  const stem = want.slice(0, dot)
-  const ext = want.slice(dot)
+/** The download this job asked for (file.name, possibly uniquified), started after it asked: the newest one. */
+async function findDownload(file) {
+  const want = file.name.split("/").pop()
+  const stem = want.slice(0, want.lastIndexOf("."))
   const items = await chrome.downloads.search({ query: [stem] }).catch(() => [])
-  const mine = items.filter((d) => {
-    const f = String(d.filename || "").split(/[\\/]/).pop()
-    const ok = f === want || (f.startsWith(stem + " (") && f.endsWith(")" + ext))
-    return ok && (!d.byExtensionId || d.byExtensionId === chrome.runtime.id) && d.state !== "interrupted"
-  })
+  const mine = items.filter((d) => L.adoptable(d, file, chrome.runtime.id))
   return mine.sort((a, b) => String(b.startTime).localeCompare(String(a.startTime)))[0]
 }
 
@@ -130,9 +124,9 @@ async function ensureOutput(s, kind) {
   const job = s.export
   let f = job.files[kind]
   const act = L.outputAction(f)
-  if (act === "keep") return f
+  if (act === "keep" || act === "skip") return f
   if (act === "find") {
-    const item = await findDownload(f.name)
+    const item = await findDownload(f)
     f = item ? await saveFile(s.id, kind, { ...f, state: "in_progress", downloadId: item.id }) : undefined
   }
   if (f && f.state === "in_progress" && f.downloadId != null) {
@@ -149,7 +143,8 @@ async function ensureOutput(s, kind) {
     return saveFile(s.id, kind, { state: "interrupted", error: String((e && e.message) || e) })
   }
   const name = `${job.folder}/${job.base}.${src.ext}`
-  await saveFile(s.id, kind, { state: "starting", name })
+  // requestedAt: on resume, only a download that started after this may be adopted (review I-3).
+  await saveFile(s.id, kind, { state: "starting", name, requestedAt: Date.now() })
   let downloadId
   try {
     downloadId = await chrome.downloads.download({ url: src.url, filename: name, conflictAction: "uniquify", saveAs: false })
@@ -171,8 +166,9 @@ const runExport = L.singleFlight(async (id) => {
   let s = await serial(id, () => db.updateSession(id, (cur) => ((claimed = L.claimExport(cur, INSTANCE, Date.now())) ? cur : false)))
   if (!claimed) return
   try {
+    // Audio first so the transcript can name the file; the transcript is written whatever
+    // happened to the audio (then its header says the audio backup was not saved).
     for (const kind of L.outputsFor(s)) {
-      if (kind === "transcript" && !L.mayWriteTranscript(s)) break
       const rec = await ensureOutput(s, kind)
       s = { ...s, export: { ...s.export, files: { ...s.export.files, [kind]: rec } } }
     }
@@ -235,7 +231,7 @@ function badge(text, tabId) {
 }
 
 const NOT_YOURS = { error: "not this tab's session", fatal: true }
-const CLOSED = (st) => st === "running" || st === "done" || st === "failed"
+const CLOSED = (st) => st === "running" || st === "done" || st === "failed" || st === "canceled"
 const LIBRARY = new Set(["list", "get", "delete", "export", "export-transcript", "export-audio", "chunks-for"])
 
 /** Session-row write from the tab that owns it. fn(cur) as for updateSession. */
@@ -278,7 +274,7 @@ async function handle(msg, sender) {
   switch (msg.type) {
     case "session-start": {
       const m = msg.session
-      const startedAt = Number.isFinite(m.startedAt) ? m.startedAt : Date.now()
+      const startedAt = L.clampStart(m.startedAt, Date.now())
       const row = {
         id: m.id, platform: String(m.platform || ""), platformName: String(m.platformName || ""), title: String(m.title || "").slice(0, 300),
         url: String(m.url || "").slice(0, 2000), startedAt, tabId, updatedAt: Date.now(), utterances: [], audio: { chunks: 0, bytes: 0 }, todo: 1,
@@ -337,7 +333,7 @@ function summary(s) {
   return {
     id: s.id, platformName: s.platformName, title: s.title, startedAt: s.startedAt, endedAt: s.endedAt,
     lines: (s.utterances || []).length, audioBytes: s.audio ? s.audio.bytes : 0,
-    exportState: job.state || (s.exported ? "legacy" : undefined), exportDoneAt: s.exportDoneAt, exportErrors: s.exportErrors,
+    exportState: job.state || (s.legacy === "unsaved" ? "unsaved" : s.exported ? "legacy" : undefined), exportDoneAt: s.exportDoneAt, exportErrors: s.exportErrors,
     deleteAt: s.exportDoneAt ? s.exportDoneAt + L.RETENTION_MS : undefined,
   }
 }
@@ -370,6 +366,17 @@ const sweepOnce = L.singleFlight(async () => {
   const live = todo.filter((s) => !s.endedAt)
   const verdicts = await Promise.all(live.map(async (s) => L.isStale(s, { alive: await alive(s), tabExists: await tabExists(s), now: Date.now() })))
   for (let i = 0; i < live.length; i++) if (verdicts[i]) await finalize(live[i].id, "stale")
+  // Calls the previous version ended but never exported (marked by the v1 -> v2 upgrade):
+  // a job with the current settings, or "not saved" with a Save button (review I-1).
+  const legacy = todo.filter((s) => s.endedAt && s.legacy === "unsaved" && !s.export)
+  if (legacy.length) {
+    const st = await settings()
+    for (const s of legacy) {
+      await serial(s.id, () => db.updateSession(s.id, (cur) => {
+        L.adoptLegacy(cur, { autoDownload: st.autoDownload, folder: st.folder, base: L.exportBase(fileBase(cur), cur.id) })
+      }))
+    }
+  }
   // Ended calls with an export still to do (claimExport decides whether a retry is due).
   for (const s of await db.todoSessions()) if (s.endedAt) await runExport(s.id)
   for (const id of await db.exportedBefore(now - L.RETENTION_MS)) {

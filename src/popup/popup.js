@@ -39,6 +39,8 @@ function status(s) {
     case "pending":
     case "running": return { text: `<div class="muted">Saving to Downloads…${s.exportErrors && s.exportErrors.length ? " (retrying: " + esc(s.exportErrors.join("; ")) + ")" : ""}</div>` }
     case "failed": return { text: `<div class="warn">Not saved: ${esc((s.exportErrors || []).join("; "))}</div>`, retry: "Save again" }
+    case "canceled": return { text: `<div class="warn">Not saved: the download was canceled (${esc((s.exportErrors || []).join("; "))})</div>`, retry: "Save again" }
+    case "unsaved": return { text: `<div class="warn">Not saved to Downloads yet</div>`, retry: "Save to Downloads" }
     case "off": return { text: `<div class="muted">Not saved automatically (kept here until you delete it)</div>`, retry: "Save to Downloads" }
     default: return { text: s.exportErrors && s.exportErrors.length ? `<div class="warn">${esc(s.exportErrors.join("; "))}</div>` : "" }
   }
@@ -63,8 +65,16 @@ function item(s) {
 }
 
 // Every stored call is reachable: pages of 50, "Show more" for the next page.
+// After an action, reload as many as were shown, in pages the worker allows (at most 200).
 async function list(count = PAGE) {
-  const r = await ask({ type: "list", offset: 0, limit: Math.max(PAGE, count) })
+  const want = Math.max(PAGE, count)
+  const r = await ask({ type: "list", offset: 0, limit: Math.min(want, 200) })
+  while (r && !r.error && r.sessions.length < Math.min(want, r.total)) {
+    const next = await ask({ type: "list", offset: r.sessions.length, limit: Math.min(want - r.sessions.length, 200) })
+    if (!next || next.error || !next.sessions.length) break
+    r.sessions = r.sessions.concat(next.sessions)
+    r.total = next.total
+  }
   render(r, false)
 }
 async function more() {

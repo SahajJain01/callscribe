@@ -6,7 +6,7 @@
   "license": "MIT",
   "scripts": {
     "test": "node --test test/",
-    "e2e": "node test/e2e/run.mjs && SCENARIO=muted-alone node test/e2e/run.mjs && node test/e2e/meet-timing.mjs && node test/e2e/recorder.mjs && node test/e2e/export.mjs",
+    "e2e": "node test/e2e/run.mjs && SCENARIO=muted-alone node test/e2e/run.mjs && node test/e2e/meet-timing.mjs && node test/e2e/recorder.mjs && node test/e2e/export.mjs && node test/e2e/upgrade.mjs",
     "e2e:crash": "node test/e2e/crash.mjs"
   }
 }

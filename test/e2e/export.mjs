@@ -3,17 +3,21 @@
 // sends them (from its isolated world in a Slack tab, so they carry sender.tab), library calls
 // from the popup page, and crash leftovers are written straight into IndexedDB. Sweeps are
 // triggered by firing the "sweep" alarm early.
-//  1. A canceled download (USER_CANCELED) is recorded as an error and retried, no duplicate file.
+//  1. A canceled download (USER_CANCELED) is recorded as canceled and not retried; the popup
+//     shows it as not saved, and Save again saves it once.
+// 1b. Canceled audio: the transcript is still written at once and says the audio was not saved.
 //  2. Two session-ends plus a sweep at once: exactly one transcript and one audio file.
 //  3. The last chunk is still being stored when session-end arrives: it is in the audio file.
 //  4. 22 unfinished calls older than 21 finished ones are all recovered, under distinct names.
 //  5. An export job left "running" by a worker that died is resumed; a download it had already
 //     started is adopted, not saved twice.
+// 5b. ...but a manual mid-call export of the same file name, made before, is never adopted.
 //  6. Deleting a live call stops it taking chunks; chunks for unknown ids are refused and
 //     orphan chunk rows are collected; content scripts can't use library calls or another
 //     tab's session.
 //  7. Retention: only a call exported more than 30 days ago is deleted.
-//  8. The popup lists every stored call (Show more) and can delete the oldest.
+//  8. The popup lists every stored call (Show more) and can delete the oldest; afterwards it
+//     still shows all of them (more than 200).
 //  9. A normal end stores the time the tab reported, not when the worker got to it.
 // 10. Restarting the worker doesn't push the sweep alarm back.
 // Usage: node test/e2e/export.mjs   (CALLSCRIBE_EXT=<dir> loads the extension from elsewhere)
@@ -136,11 +140,19 @@ const end = (id, at) => tab.ask({ type: "session-end", id, reason: "left", at })
   check(r && r.endedAt === at, `ended at the reported time (${r && r.endedAt - at} ms off)`)
 }
 
-// ---------- 1. canceled download: error recorded, retried, no duplicate (F3)
+// The popup's entry for a call: its status text and button labels.
+const popupEntry = async (id) => {
+  await send("Page.reload", {}, popupSid)
+  await sleep(1200)
+  return popupEval(`(() => { const li = document.querySelector('#list li[data-id=${JSON.stringify(id)}]'); return li ? { text: li.textContent.replace(/\\s+/g, " "), buttons: [...li.querySelectorAll("button")].map((b) => b.dataset.a + ":" + b.textContent) } : null })()`)
+}
+const cancelNextDownload = () => swEval(`(() => { globalThis.__cancelNext = 1; if (!globalThis.__cancelHooked) { globalThis.__cancelHooked = true; chrome.downloads.onCreated.addListener((d) => { if (globalThis.__cancelNext > 0) { globalThis.__cancelNext--; chrome.downloads.cancel(d.id) } }) } return true })()`)
+
+// ---------- 1. canceled download: recorded as canceled, not retried, Save again works (F3, review I-2a)
 {
   console.log("-- canceled download")
   const id = "slack-huddle-e2e-cnc01"
-  await swEval(`(() => { globalThis.__cancelNext = 1; if (!globalThis.__cancelHooked) { globalThis.__cancelHooked = true; chrome.downloads.onCreated.addListener((d) => { if (globalThis.__cancelNext > 0) { globalThis.__cancelNext--; chrome.downloads.cancel(d.id) } }) } return true })()`)
+  await cancelNextDownload()
   await start(id, "cancelme")
   await update(id, "cancelme")
   await end(id)
@@ -148,13 +160,40 @@ const end = (id, at) => tab.ask({ type: "session-end", id, reason: "left", at })
   const s1 = failed || (await row(id))
   console.log("  after cancel:", JSON.stringify({ export: s1 && s1.export && { state: s1.export.state, attempts: s1.export.attempts }, exported: s1 && s1.exported, errors: s1 && s1.exportErrors }))
   check(Boolean(failed), "USER_CANCELED recorded as an export error")
-  check(failed && failed.export && failed.export.state === "pending" && !failed.exportDoneAt, "export not marked done after the cancel")
-  await sleep(16000) // first retry is due 15 s after a failed attempt
+  check(failed && failed.export && failed.export.state === "canceled" && !failed.exportDoneAt && !failed.todo, `recorded as canceled, not done, not sweep work (${failed && failed.export && failed.export.state})`)
+  await sleep(16000) // a retry would be due 15 s after a failed attempt
   await kickSweep()
+  await sleep(4000)
+  const s2 = await row(id)
+  check(filesFor("cancelme").length === 0 && s2 && s2.export && s2.export.state === "canceled" && s2.export.attempts === 1, `not retried automatically (${JSON.stringify(filesFor("cancelme"))}, ${s2 && s2.export && s2.export.state})`)
+  const entry = await popupEntry(id)
+  check(entry && /Not saved/.test(entry.text) && entry.buttons.includes("export:Save again"), `popup shows Not saved with Save again (${JSON.stringify(entry)})`)
+  await popupEval(`(() => { document.querySelector('#list li[data-id=${JSON.stringify(id)}] button[data-a="export"]').click(); return true })()`)
   const done = await waitFor(async () => { const s = await row(id); return s && s.export && s.export.state === "done" && s }, 20000)
-  check(Boolean(done), "retried and completed on the next sweep")
+  check(Boolean(done), "Save again saved it")
   const fs1 = filesFor("cancelme")
   check(fs1.length === 1 && fs1[0].endsWith(".md") && !fs1[0].includes("("), `one transcript, no duplicate (${JSON.stringify(fs1)})`)
+}
+
+// ---------- 1b. canceled audio: the transcript is still written at once, saying audio was not saved (review I-2b)
+{
+  console.log("-- canceled audio download")
+  const id = "slack-huddle-e2e-cna01"
+  await start(id, "cancelaudio")
+  await update(id, "cancelaudio")
+  await chunk(id, 0, 4000)
+  await cancelNextDownload() // the audio goes first
+  await end(id)
+  const md = await waitFor(async () => filesFor("cancelaudio").find((f) => f.endsWith(".md")), 12000)
+  check(Boolean(md), `transcript written right after the audio was canceled (${JSON.stringify(filesFor("cancelaudio"))})`)
+  if (md) {
+    const text = fs.readFileSync(path.join(outDir, md), "utf8")
+    check(text.includes("- Audio backup: not saved") && !/\.webm/.test(text), "its header says the audio backup was not saved")
+  }
+  const s = await waitFor(async () => { const r = await row(id); return r && r.export && r.export.state === "canceled" && r }, 10000)
+  check(s && !s.todo && !s.exportDoneAt && filesFor("cancelaudio").filter((f) => f.endsWith(".webm")).length === 0, `audio recorded as canceled, not retried, never due for retention (${s && s.export && s.export.state})`)
+  const entry = await popupEntry(id)
+  check(entry && /Not saved/.test(entry.text) && entry.buttons.includes("export:Save again"), "popup shows Not saved with Save again")
 }
 
 // ---------- 2. two finalizers and a sweep at once (F4)
@@ -221,18 +260,45 @@ const end = (id, at) => tab.ask({ type: "session-end", id, reason: "left", at })
   const t0 = now() - 3600 * 1000
   const base = { platform: "slack-huddle", platformName: "Slack huddle", startedAt: t0, updatedAt: t0 + 60000, endedAt: t0 + 60000, endReason: "left", tabId: 999999, utterances: [{ speaker: "A", text: "resumed", start: t0 + 1000, end: t0 + 2000 }], audio: { chunks: 0, bytes: 0 }, todo: 1 }
   // adopt: the old worker had asked Chrome for this download but died before recording its id.
+  const requestedAt = now() - 50
   const pre = await swEval(`new Promise((r) => chrome.downloads.download({ url: "data:text/markdown;base64,${Buffer.from("already saved").toString("base64")}", filename: "CallScribe/adoptjob_aa1.md", conflictAction: "uniquify", saveAs: false }, (id) => r(id)))`)
   await waitFor(async () => filesFor("adoptjob").length === 1, 10000)
   check(await putRows([
     { ...base, id: "slack-huddle-rs-rsm01", title: "resumejob", export: { state: "running", owner: "dead-worker", attempts: 1, nextAttemptAt: 0, folder: "CallScribe", base: "resumejob_rsm01", files: {}, log: [] } },
-    { ...base, id: "slack-huddle-rs-aa1", title: "adoptjob", export: { state: "running", owner: "dead-worker", attempts: 1, nextAttemptAt: 0, folder: "CallScribe", base: "adoptjob_aa1", files: { transcript: { state: "starting", name: "CallScribe/adoptjob_aa1.md" } }, log: [] } },
+    { ...base, id: "slack-huddle-rs-aa1", title: "adoptjob", export: { state: "running", owner: "dead-worker", attempts: 1, nextAttemptAt: 0, folder: "CallScribe", base: "adoptjob_aa1", files: { transcript: { state: "starting", name: "CallScribe/adoptjob_aa1.md", requestedAt } }, log: [] } },
   ]) === true, `wrote two interrupted export jobs (pre-started download ${pre})`)
   await kickSweep()
   const r1 = await waitFor(async () => { const s = await row("slack-huddle-rs-rsm01"); return s && s.export && s.export.state === "done" && s }, 20000)
   const r2 = await waitFor(async () => { const s = await row("slack-huddle-rs-aa1"); return s && s.export && s.export.state === "done" && s }, 20000)
   await sleep(2000)
   check(Boolean(r1) && filesFor("resumejob").length === 1, `interrupted export resumed once (${JSON.stringify(filesFor("resumejob"))})`)
-  check(Boolean(r2) && filesFor("adoptjob").length === 1, `started download adopted, not saved twice (${JSON.stringify(filesFor("adoptjob"))})`)
+  check(Boolean(r2) && filesFor("adoptjob").length === 1 && r2.export.files.transcript.downloadId === pre, `started download adopted, not saved twice (${JSON.stringify(filesFor("adoptjob"))})`)
+}
+
+// ---------- 5b. resume never adopts a manual mid-call export of the same name (review I-3)
+{
+  console.log("-- resume does not adopt a manual mid-call transcript")
+  const id = "slack-huddle-e2e-man01"
+  await start(id, "manualmid")
+  await update(id, "manualmid")
+  check((await popupAsk({ type: "export-transcript", id })) && (await waitFor(async () => filesFor("manualmid").length === 1, 10000)), "manual Transcript export during the call")
+  const manual = await swEval(`chrome.downloads.search({ query: ["manualmid"] }).then((a) => a.map((d) => ({ id: d.id, filename: d.filename.split("/").pop(), state: d.state })))`)
+  const m = manual && manual[0]
+  const stem = m && m.filename.replace(/\.md$/, "")
+  await tab.ask({ type: "session-update", id, rev: 2, title: "manualmid", captionsOn: true, utterances: [{ speaker: "Alice", text: "partial line", start: now() - 4000, end: now() - 3000 }, { speaker: "Bob", text: "FINAL LINE after the manual export", start: now() - 2000, end: now() - 1000 }] })
+  await sleep(50)
+  // The worker claimed the export, recorded the transcript as "starting" and died before Chrome got the request.
+  const patched = await db(`(d, fin) => { const tx = d.transaction("sessions", "readwrite"); const st = tx.objectStore("sessions"); const g = st.get(${JSON.stringify(id)}); g.onsuccess = () => { const s = g.result; const t = Date.now(); Object.assign(s, { endedAt: t - 1000, endReason: "left", todo: 1, export: { state: "running", owner: "dead-worker", attempts: 1, nextAttemptAt: 0, folder: "CallScribe", base: ${JSON.stringify(stem)}, files: { transcript: { state: "starting", name: ${JSON.stringify("CallScribe/" + stem + ".md")}, requestedAt: t } }, log: [] } }); st.put(s) }; tx.oncomplete = () => fin(true) }`)
+  check(patched === true && m && m.state === "complete", `wrote the interrupted job over the manual file's name (${JSON.stringify(manual)})`)
+  await kickSweep()
+  const s = await waitFor(async () => { const r = await row(id); return r && r.export && r.export.state !== "running" && r }, 20000)
+  const t = s && s.export && s.export.files && s.export.files.transcript
+  console.log("  job transcript:", JSON.stringify(t), "files:", JSON.stringify(filesFor("manualmid")))
+  check(t && t.downloadId !== m.id, "the manual partial transcript was not adopted as the job's output")
+  check(!(s && s.export.state === "done" && t && t.downloadId === m.id), "and the call was not marked done on it")
+  const jobFile = t && t.filename
+  check(jobFile && jobFile !== m.filename && fs.readFileSync(path.join(outDir, jobFile), "utf8").includes("FINAL LINE"), `the job wrote the full transcript itself (${jobFile})`)
+  check(!fs.readFileSync(path.join(outDir, m.filename), "utf8").includes("FINAL LINE"), "control: the manual file is the partial one")
 }
 
 // ---------- 6. deleting a live call, orphan chunks, sender checks (M5, I2, security M5)
@@ -301,11 +367,11 @@ const end = (id, at) => tab.ask({ type: "session-end", id, reason: "left", at })
 {
   console.log("-- popup lists and deletes all calls")
   const t0 = now() - 400 * 24 * 3600 * 1000
-  await putRows(Array.from({ length: 55 }, (_, i) => ({ id: `slack-huddle-pop-p${i}z`, platform: "slack-huddle", platformName: "Slack huddle", title: "old call " + i, startedAt: t0 + i * 60000, updatedAt: t0 + i * 60000, endedAt: t0 + i * 60000 + 1000, utterances: [], audio: { chunks: 0, bytes: 0 }, export: { state: "off" } })))
+  await putRows(Array.from({ length: 215 }, (_, i) => ({ id: `slack-huddle-pop-p${i}z`, platform: "slack-huddle", platformName: "Slack huddle", title: "old call " + i, startedAt: t0 + i * 60000, updatedAt: t0 + i * 60000, endedAt: t0 + i * 60000 + 1000, utterances: [], audio: { chunks: 0, bytes: 0 }, export: { state: "off" } })))
   const total = await countRows()
   await send("Page.reload", {}, popupSid)
   await sleep(1500)
-  for (let i = 0; i < 20; i++) {
+  for (let i = 0; i < 30; i++) {
     const more = await popupEval(`(() => { const b = document.querySelector("#more"); if (!b || b.hidden) return false; b.click(); return true })()`)
     if (!more) break
     await sleep(700)
@@ -316,6 +382,10 @@ const end = (id, at) => tab.ask({ type: "session-end", id, reason: "left", at })
   const clicked = await popupEval(`(() => { const li = document.querySelector('#list li[data-id="slack-huddle-pop-p0z"]'); if (!li) return false; li.querySelector('button[data-a="delete"]').click(); return true })()`)
   check(clicked, "the oldest call has a Delete button")
   check(await waitFor(async () => !(await row("slack-huddle-pop-p0z")), 5000), "and Delete removes it")
+  // After the action the popup reloads every call it was showing, not only the first 200 (review M-3).
+  const after = await waitFor(async () => { const n = await popupEval(`document.querySelectorAll("#list li[data-id]").length`); return n === total - 1 ? n : null }, 5000)
+  const moreHidden = await popupEval(`document.querySelector("#more").hidden`)
+  check(after === total - 1 && moreHidden, `after Delete it still shows all ${total - 1} calls (${await popupEval(`document.querySelectorAll("#list li[data-id]").length`)}, Show more hidden: ${moreHidden})`)
 }
 
 // ---------- 10. a worker restart keeps the sweep alarm's schedule (M4)

@@ -1,15 +1,16 @@
 // The capture -> export state machine, as pure functions over a session row (the service
 // worker does the I/O). ES module (background, tests).
 //
-// A session row goes:   live (todo=1)  ->  ended + export job  ->  done | failed | off
+// A session row goes:   live (todo=1)  ->  ended + export job  ->  done | failed | canceled | off
 //
 // session.export = {
-//   state: "pending" | "running" | "done" | "failed" | "off",   off = auto-download was off
+//   state: "pending" | "running" | "done" | "failed" | "canceled" | "off",
+//          off = auto-download was off; canceled = the user canceled a download (not retried)
 //   folder, base,          pinned when the call ended: Downloads/<folder>/<base>.<ext>
 //   owner, claimedAt,      the worker instance running it (a dead worker's claim is taken over)
 //   attempts, nextAttemptAt,
 //   files: { audio?, transcript? }  each { state: "starting"|"in_progress"|"complete"|"interrupted",
-//                                         downloadId, name (asked for), filename (written), error }
+//                                         downloadId, name (asked for), requestedAt, filename (written), error }
 //   log: [{ t, attempt, error }]   last errors, kept after success
 // }
 // session.todo = 1 while the sweep has work (live, or export pending/running): indexed, so
@@ -42,6 +43,7 @@ export function endTime(session, reason, now, eventAt) {
 
 export function needsWork(s) {
   if (!s.endedAt) return true
+  if (s.legacy === "unsaved" && !s.export) return true // a v1 call that never exported: adoptLegacy makes its job
   const st = s.export && s.export.state
   return st === "pending" || st === "running"
 }
@@ -65,12 +67,38 @@ export function markEnded(s, { reason, at, now, autoDownload, folder, base }) {
   return s
 }
 
+/**
+ * DB v1 -> v2, one row (review I-1). Live calls become sweep work. A call that ended but was
+ * never exported (the old export died: lifecycle F2) is marked legacy "unsaved" and becomes
+ * sweep work too; the worker gives it a job with the current settings (adoptLegacy). A call the
+ * old version marked `exported` stays manual-only: auto-exporting it would duplicate files the
+ * user most likely has, and its flag never confirmed a download, so it's never auto-deleted.
+ */
+export function migrateV1Row(row) {
+  if (!row.endedAt) row.todo = 1
+  else if (!row.exported && !row.export) {
+    row.legacy = "unsaved"
+    row.todo = 1
+  }
+  return row
+}
+
+/** The worker's half of the upgrade: a pending job (auto-download on) or "off", which the popup shows as not saved with a Save button. */
+export function adoptLegacy(s, { autoDownload, folder, base }) {
+  if (s.legacy !== "unsaved" || s.export || !s.endedAt) return s
+  s.export = autoDownload ? newJob(folder, base) : { state: "off" }
+  delete s.legacy
+  setTodo(s)
+  return s
+}
+
 /** Manual "save again": a fresh job (new attempt count), same file names unless given. */
 export function resetExport(s, { folder, base }) {
   const prev = s.export || {}
   s.export = newJob(prev.folder || folder, prev.base || base)
   s.export.log = (prev.log || []).slice(-10)
   delete s.exportDoneAt
+  delete s.legacy
   setTodo(s)
   return s
 }
@@ -111,11 +139,16 @@ export function outputsFor(s) {
   return s.audio && s.audio.chunks > 0 ? ["audio", "transcript"] : ["transcript"]
 }
 
-/** keep: already saved. check: a download is under way. find: the worker died between asking
- * for a download and recording its id, so look for it before starting another. start: (again). */
+/** The user canceled this download: recorded, never retried automatically (review I-2). */
+export const isCanceled = (f) => Boolean(f && f.state === "interrupted" && f.error === "USER_CANCELED")
+
+/** keep: already saved. skip: the user canceled it. check: a download is under way. find: the
+ * worker died between asking for a download and recording its id, so look for it before
+ * starting another. start: (again). */
 export function outputAction(file) {
   if (!file) return "start"
   if (file.state === "complete") return "keep"
+  if (isCanceled(file)) return "skip"
   if (file.state === "in_progress" && file.downloadId != null) return "check"
   if (file.state === "starting") return "find"
   return "start"
@@ -128,20 +161,24 @@ export function transcriptAudioRef(s) {
   return a && a.state === "complete" && a.filename ? a.filename : null
 }
 
-/** The transcript waits for its audio file, so its header can name it; the last attempt writes it regardless. */
-export function mayWriteTranscript(s) {
-  if (transcriptAudioRef(s) !== null) return true
-  return ((s.export && s.export.attempts) || 0) >= MAX_ATTEMPTS
-}
-
-/** After an attempt: done if every output is complete, else retry later or give up. */
+/**
+ * After an attempt: done if every output is complete. Otherwise retry what failed later, or
+ * give up (failed). Outputs the user canceled are not retried; once nothing else is left to
+ * retry the job is "canceled": shown as not saved with Save again, never deleted by retention.
+ * The transcript is written on every attempt whatever happened to the audio (its header then
+ * says the audio backup was not saved), so an audio failure never holds back the transcript.
+ */
 export function settleExport(s, now) {
   const job = s.export
   const files = job.files || {}
   const errors = []
+  let retry = false
   for (const k of outputsFor(s)) {
     const f = files[k]
-    if (!f || f.state !== "complete") errors.push(`${k}: ${(f && f.error) || (f && f.state === "in_progress" ? "still downloading" : "not saved")}`)
+    if (!f || f.state !== "complete") {
+      errors.push(`${k}: ${(f && f.error) || (f && f.state === "in_progress" ? "still downloading" : "not saved")}`)
+      if (!isCanceled(f)) retry = true
+    }
   }
   delete job.owner
   if (!errors.length) {
@@ -152,7 +189,9 @@ export function settleExport(s, now) {
   } else {
     job.log = (job.log || []).concat(errors.map((error) => ({ t: now, attempt: job.attempts, error }))).slice(-10)
     s.exportErrors = errors
-    if ((job.attempts || 0) >= MAX_ATTEMPTS) {
+    if (!retry) {
+      job.state = "canceled"
+    } else if ((job.attempts || 0) >= MAX_ATTEMPTS) {
       job.state = "failed"
     } else {
       job.state = "pending"
@@ -198,13 +237,41 @@ export function acceptChunk(s, { tabId, seq, size, mime, now }, { tombstone } = 
   if (!s) return no("no such session")
   if (s.tabId !== tabId) return no("session belongs to another tab")
   const st = s.export && s.export.state
-  if (st === "running" || st === "done" || st === "failed") return no("session closed")
+  if (st === "running" || st === "done" || st === "failed" || st === "canceled") return no("session closed")
   if (!Number.isInteger(seq) || seq < 0 || seq > 1e7) return no("bad seq")
   if (!Number.isInteger(size) || size <= 0 || size > MAX_CHUNK_BYTES) return no("bad chunk size")
   if (typeof mime !== "string" || !AUDIO_MIME.test(mime)) return no("bad mime")
   const budget = CHUNK_BUDGET_BASE + (Math.max(0, now - s.startedAt) / 1000) * CHUNK_BUDGET_PER_S
   if (((s.audio && s.audio.bytes) || 0) + size > budget) return no("audio over budget")
   return { ok: true }
+}
+
+/**
+ * Resuming a "starting" output (the worker died between asking Chrome for the download and
+ * recording its id): may this chrome.downloads item be adopted as that output? Only a download
+ * by this extension, of the claimed name (or Chrome's " (n)" variant of it), started at or after
+ * the request was recorded. That excludes a manual Transcript/Audio export of the same call
+ * made earlier, e.g. a partial transcript saved mid-call (review I-3). No recorded request
+ * time (a record from before this rule): adopt nothing and start again.
+ */
+export function adoptable(item, file, extId) {
+  if (!item || !file || !file.name || !Number.isFinite(file.requestedAt)) return false
+  if (item.state === "interrupted") return false
+  if (item.byExtensionId && item.byExtensionId !== extId) return false
+  const want = baseName(file.name)
+  const dot = want.lastIndexOf(".")
+  const stem = want.slice(0, dot)
+  const ext = want.slice(dot)
+  const got = baseName(item.filename)
+  const sameName = got === want || (got.startsWith(stem + " (") && got.endsWith(ext) && /^ \(\d+\)$/.test(got.slice(stem.length, got.length - ext.length)))
+  const started = Date.parse(item.startTime)
+  return sameName && Number.isFinite(started) && started >= file.requestedAt
+}
+
+/** The start time a tab reports, kept within the last day (it sizes the audio budget, review M-5). */
+export function clampStart(startedAt, now) {
+  if (!Number.isFinite(startedAt)) return now
+  return Math.min(now, Math.max(now - 24 * 60 * 60 * 1000, startedAt))
 }
 
 /** list/get/delete/export-*: only the extension's own popup page (also when opened in a tab). */

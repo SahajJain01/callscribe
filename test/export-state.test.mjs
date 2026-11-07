@@ -120,13 +120,13 @@ test("the transcript names the audio file that was actually written (F9)", () =>
   assert.equal(L.transcriptAudioRef(ended({ audio: { chunks: 0, bytes: 0 } })), undefined)
 })
 
-test("the transcript waits for the audio file, except on the last attempt", () => {
-  const s = ended({}, { attempts: 1, files: { audio: { state: "interrupted", error: "FILE_FAILED" } } })
-  assert.equal(L.mayWriteTranscript(s), false)
-  s.export.attempts = L.MAX_ATTEMPTS
-  assert.equal(L.mayWriteTranscript(s), true)
-  assert.equal(L.mayWriteTranscript(ended({}, { files: { audio: { state: "complete", filename: "b.webm" } } })), true)
-  assert.equal(L.mayWriteTranscript(ended({ audio: { chunks: 0, bytes: 0 } })), true)
+test("the transcript is not held back by an audio download that failed or was canceled (review I-2)", () => {
+  for (const error of ["FILE_FAILED", "USER_CANCELED"]) {
+    const s = ended({}, { attempts: 1, files: { audio: { state: "interrupted", error } } })
+    assert.equal(L.outputAction(s.export.files.transcript), "start", error)
+    assert.equal(L.transcriptAudioRef(s), null, "its header says the audio backup was not saved")
+  }
+  assert.equal(L.mayWriteTranscript, undefined, "no gate: the transcript is written on the first attempt")
 })
 
 // ---- settling an attempt (F3 retry)
@@ -141,17 +141,57 @@ test("all outputs complete: export done, retention clock starts, not sweep work"
   assert.equal(s.todo, undefined)
 })
 
-test("a canceled download is recorded as an error and retried later (USER_CANCELED, F3)", () => {
+test("a failed download is recorded as an error and retried later (F3)", () => {
   const s = ended({ audio: { chunks: 0, bytes: 0 } })
   L.claimExport(s, "w", start + 11 * min)
-  s.export.files = { transcript: { state: "interrupted", error: "USER_CANCELED", downloadId: 3 } }
+  s.export.files = { transcript: { state: "interrupted", error: "FILE_FAILED", downloadId: 3 } }
   L.settleExport(s, start + 11 * min)
   assert.equal(s.export.state, "pending")
-  assert.deepEqual(s.exportErrors, ["transcript: USER_CANCELED"])
+  assert.deepEqual(s.exportErrors, ["transcript: FILE_FAILED"])
   assert.ok(s.export.nextAttemptAt > start + 11 * min)
   assert.equal(s.todo, 1)
   assert.equal(s.export.owner, undefined)
-  assert.ok(s.export.log.some((e) => /USER_CANCELED/.test(e.error)))
+  assert.ok(s.export.log.some((e) => /FILE_FAILED/.test(e.error)))
+})
+
+// ---- a download the user canceled (review I-2, controller ruling)
+const canceledFile = { state: "interrupted", error: "USER_CANCELED", downloadId: 3 }
+test("a canceled download is recorded as canceled and not retried automatically (review I-2a)", () => {
+  const s = ended({ audio: { chunks: 0, bytes: 0 } })
+  L.claimExport(s, "w", start + 11 * min)
+  s.export.files = { transcript: { ...canceledFile } }
+  L.settleExport(s, start + 11 * min)
+  assert.equal(s.export.state, "canceled")
+  assert.deepEqual(s.exportErrors, ["transcript: USER_CANCELED"])
+  assert.equal(s.todo, undefined, "not sweep work")
+  assert.equal(L.needsWork(s), false)
+  assert.equal(L.claimExport(s, "w", start + day), false, "no automatic retry")
+  assert.equal(s.exportDoneAt, undefined)
+  assert.equal(L.retentionDue(s, start + 365 * day), false, "never deleted by retention")
+  assert.equal(L.acceptChunk(s, { tabId: 7, seq: 9, size: 10, mime: "audio/webm", now: start + 12 * min }).fatal, true)
+})
+test("canceled audio with the transcript saved: canceled, the transcript is kept, the audio is not retried (review I-2)", () => {
+  const s = ended()
+  L.claimExport(s, "w", start + 11 * min)
+  s.export.files = { audio: { ...canceledFile }, transcript: { state: "complete", filename: "b.md" } }
+  assert.equal(L.outputAction(s.export.files.audio), "skip")
+  L.settleExport(s, start + 11 * min)
+  assert.equal(s.export.state, "canceled")
+  assert.deepEqual(s.exportErrors, ["audio: USER_CANCELED"])
+  assert.equal(L.retentionDue(s, start + 365 * day), false)
+})
+test("canceled audio and a transcript that failed: the transcript alone is retried (review I-2)", () => {
+  const s = ended()
+  L.claimExport(s, "w", start + 11 * min)
+  s.export.files = { audio: { ...canceledFile }, transcript: { state: "interrupted", error: "FILE_FAILED" } }
+  L.settleExport(s, start + 11 * min)
+  assert.equal(s.export.state, "pending")
+  assert.equal(L.claimExport(s, "w", s.export.nextAttemptAt), true)
+  assert.equal(L.outputAction(s.export.files.audio), "skip")
+  assert.equal(L.outputAction(s.export.files.transcript), "start")
+  s.export.files.transcript = { state: "complete", filename: "b.md" }
+  L.settleExport(s, s.export.nextAttemptAt + 1)
+  assert.equal(s.export.state, "canceled")
 })
 
 test("after the last attempt the job is failed (kept, shown, not retried)", () => {
@@ -287,4 +327,73 @@ test("file names carry a short session id so two calls never share a name (F9)",
   assert.equal(L.shortId("google-meet-m0-Z_9/x"), "z9x")
   assert.notEqual(L.exportBase("2026-11-04_1605_Slack-huddle_design", "slack-huddle-a-aaaaa"), L.exportBase("2026-11-04_1605_Slack-huddle_design", "slack-huddle-a-bbbbb"))
   assert.equal(L.exportBase("2026-11-04_1605_Slack-huddle_design", "slack-huddle-a-ab3cd"), "2026-11-04_1605_Slack-huddle_design_ab3cd")
+})
+
+// ---- calls stored by the previous version (DB v1, review I-1)
+const v1 = (o = {}) => ({ id: "slack-huddle-old-v1aa", platform: "slack-huddle", platformName: "Slack huddle", title: "old", startedAt: start, updatedAt: start + min, utterances: [], audio: { chunks: 0, bytes: 0 }, ...o })
+test("v1 upgrade: an ended call the old version never exported becomes export work (review I-1)", () => {
+  const s = L.migrateV1Row(v1({ endedAt: start + min, exportErrors: [] }))
+  assert.equal(s.todo, 1)
+  assert.equal(L.needsWork(s), true)
+  assert.equal(s.export, undefined, "the job is made by the worker, which knows the settings")
+})
+test("v1 upgrade: a live call is sweep work; a call the old version exported stays manual-only (review I-1)", () => {
+  assert.equal(L.migrateV1Row(v1()).todo, 1)
+  const old = L.migrateV1Row(v1({ endedAt: start + min, exported: start + 2 * min, exportErrors: [] }))
+  assert.equal(old.todo, undefined)
+  assert.equal(L.needsWork(old), false)
+  assert.equal(L.adoptLegacy(old, { autoDownload: true, folder: "CallScribe", base: "b" }).export, undefined)
+})
+test("a never-exported v1 call gets a pending export when auto-download is on (review I-1)", () => {
+  const s = L.adoptLegacy(L.migrateV1Row(v1({ endedAt: start + min })), { autoDownload: true, folder: "CallScribe", base: "old_v1aa" })
+  assert.equal(s.export.state, "pending")
+  assert.equal(s.export.base, "old_v1aa")
+  assert.equal(s.todo, 1)
+  assert.equal(L.claimExport(s, "w", start + day), true)
+})
+test("a never-exported v1 call is flagged not saved (Save button) when auto-download is off (review I-1)", () => {
+  const s = L.adoptLegacy(L.migrateV1Row(v1({ endedAt: start + min })), { autoDownload: false, folder: "CallScribe", base: "b" })
+  assert.equal(s.export.state, "off")
+  assert.equal(s.todo, undefined)
+  assert.equal(L.needsWork(s), false)
+  assert.equal(L.retentionDue(s, start + 365 * day), false)
+})
+test("adopting a v1 call twice changes nothing the second time", () => {
+  const s = L.adoptLegacy(L.migrateV1Row(v1({ endedAt: start + min })), { autoDownload: true, folder: "CallScribe", base: "b" })
+  s.export.state = "running"
+  L.adoptLegacy(s, { autoDownload: false, folder: "X", base: "y" })
+  assert.equal(s.export.state, "running")
+  assert.equal(s.export.folder, "CallScribe")
+})
+
+// ---- resuming: which download may be adopted (review I-3)
+const ME = "abcdefghijklmnop"
+const iso = (t) => new Date(t).toISOString()
+const startingFile = { state: "starting", name: "CallScribe/b_ab3cd.md", requestedAt: start + 10 * min }
+const dl = (o = {}) => ({ id: 9, filename: "/home/u/Downloads/CallScribe/b_ab3cd.md", byExtensionId: ME, state: "complete", startTime: iso(start + 10 * min + 5), ...o })
+test("resume adopts the download it asked for, also when Chrome added (n) (F2)", () => {
+  assert.equal(L.adoptable(dl(), startingFile, ME), true)
+  assert.equal(L.adoptable(dl({ filename: "/d/CallScribe/b_ab3cd (2).md" }), startingFile, ME), true)
+  assert.equal(L.adoptable(dl({ state: "in_progress" }), startingFile, ME), true)
+})
+test("resume never adopts a download started before the export asked for it: a manual mid-call transcript (review I-3)", () => {
+  assert.equal(L.adoptable(dl({ startTime: iso(start + 9 * min) }), startingFile, ME), false)
+  assert.equal(L.adoptable(dl({ startTime: iso(start + 10 * min - 1) }), startingFile, ME), false)
+})
+test("resume never adopts another name, another extension's download, an interrupted one, or when the request time is unknown (review I-3)", () => {
+  assert.equal(L.adoptable(dl({ filename: "/d/CallScribe/b_ab3cd (manual).md" }), startingFile, ME), false)
+  assert.equal(L.adoptable(dl({ filename: "/d/CallScribe/b_ab3cdx.md" }), startingFile, ME), false)
+  assert.equal(L.adoptable(dl({ filename: "/d/CallScribe/b_ab3cd.webm" }), startingFile, ME), false)
+  assert.equal(L.adoptable(dl({ byExtensionId: "other" }), startingFile, ME), false)
+  assert.equal(L.adoptable(dl({ state: "interrupted" }), startingFile, ME), false)
+  assert.equal(L.adoptable(dl(), { state: "starting", name: "CallScribe/b_ab3cd.md" }, ME), false)
+})
+
+// ---- the start time a tab reports (review M-5)
+test("a session's start time from the tab is clamped to the last 24 hours (audio budget, review M-5)", () => {
+  const now = start + day
+  assert.equal(L.clampStart(0, now), now - day)
+  assert.equal(L.clampStart(now + 5 * min, now), now)
+  assert.equal(L.clampStart(now - 5 * min, now), now - 5 * min)
+  assert.equal(L.clampStart("x", now), now)
 })
