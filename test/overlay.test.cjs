@@ -248,6 +248,13 @@ test("overlayModel: audio that could not be saved is a warning, flagged on the p
   assert.equal(m.dotWarn, true)
 })
 
+test("overlayModel: a transcript that could not be saved is a warning, flagged on the pill (final review M-A)", () => {
+  const m = overlayModel(state({ transcript: "save-failed" }), T0 + 1000)
+  assert.deepEqual(row(m, "Transcript"), { label: "Transcript", value: "save failed", level: "warn" })
+  assert.equal(m.dotWarn, true)
+  assert.equal(row(overlayModel(state({}), T0 + 1000), "Transcript"), undefined, "no Transcript row while saves succeed")
+})
+
 test("renderRows gives caption text and names their own direction (runtime RTL minor)", () => {
   const doc = fakeDoc()
   const list = doc.createElement("div")

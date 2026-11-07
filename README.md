@@ -44,7 +44,8 @@ Works in Chrome, Edge, Brave and other Chromium browsers. Slack huddles must be 
   browser, 50 at a time (**Show more** for older ones). Each call has Transcript / Audio /
   Delete buttons and shows whether its files were saved. A call that wasn't saved (a failed or
   canceled download, or auto-save off) says **Not saved** and has a **Save again** (or **Save
-  to Downloads**) button.
+  to Downloads**) button. Deleting a call that is still going stops recording it in its tab
+  until you leave that call.
 
 Settings (popup → Settings): auto-enable captions, hide captions on screen (on by default; the
 box is moved off-screen but still read, so the transcript is unaffected; in Meet the video tiles
@@ -60,8 +61,8 @@ can't tell (for example, it can't find the mute button), your mic is not recorde
   any) are saved to Downloads. Files in Downloads are yours and are never touched.
 - A call whose files were never saved (auto-save off, a failed download, or a download you
   canceled) stays until you delete it. A canceled download isn't retried; use **Save again**.
-- A failed download is retried a few times (after 15 s, 1, 5 and 15 minutes), then the call
-  shows **Not saved**.
+- A failed download is retried a few times (after 15 s, 1, 5 and 15 minutes; Chrome may hold
+  the first one back to about 30 s), then the call shows **Not saved**.
 
 ### If Chrome or the tab crashes
 
@@ -71,7 +72,8 @@ files are saved on the next check (when Chrome starts, or every 2 minutes). If s
 cut off halfway, it resumes where it stopped, and each file is saved once.
 
 If the extension is updated or reloaded during a call, the open tab stops recording and the
-overlay says "CallScribe was updated. Reload this tab to keep recording".
+overlay says "CallScribe was updated. Reload this tab to keep recording". Its captions and
+video tiles go back to how the call app shows them.
 
 ## How it works
 
@@ -82,9 +84,9 @@ overlay says "CallScribe was updated. Reload this tab to keep recording".
 | Meet caption feed | `src/page/meet-channels.js`, `src/shared/meet-proto.js` | Meet's server transcribes every call and streams captions on a WebRTC data channel (`captions_v2`) to any client that asks. The page tap forwards that channel's messages to the content script and sends the same "captions on" request the CC button sends, so captions arrive with CC off, live even in a hidden tab. Each update carries an utterance's full current text, a version and the speaker's device id (named from the participant tiles or Meet's `collections` channel). If you turn CC off in Meet (which stops the feed), CallScribe asks again. |
 | Render keepalive | `src/page/render-keepalive.js` | Meet applies caption updates in `requestAnimationFrame`, which Chrome stops running when the tab isn't drawn (background tab, minimized window, Companion-mode tab). During a call, each animation frame gets a fallback timer so captions keep reaching the page, and get timestamped, while the tab is hidden. |
 | Watcher | `src/content/main.js` | Picks the adapter for the site, detects call start/end, takes captions from the platform's feed (Meet) or reads caption rows from the page, auto-enables captions (in Meet only as a fallback), forwards mute state and audio chunks. |
-| Overlay | `src/content/overlay.js` | A small draggable pill at the top of the call (elapsed time and the latest caption) that expands into a status row (caption source, audio, mic, lines) and a live transcript you can scroll back through to the start of the call. When captions are read from the page (CC), the status row has a **Hide on page** / **Show on page** button for the same setting as the popup's. Audio shows **save failed** if the browser couldn't store the audio. Drawn in a closed shadow root, never takes keyboard focus, and only shown while a call is being recorded (or to say the tab must be reloaded after an update). Turn it off with "Show recording overlay on the call". |
+| Overlay | `src/content/overlay.js` | A small draggable pill at the top of the call (elapsed time and the latest caption) that expands into a status row (caption source, audio, mic, lines) and a live transcript you can scroll back through to the start of the call. When captions are read from the page (CC), the status row has a **Hide on page** / **Show on page** button for the same setting as the popup's. Audio shows **save failed** if the browser couldn't store the audio, and a **Transcript: save failed** row appears while it can't store the transcript. Drawn in a closed shadow root, never takes keyboard focus, and only shown while a call is being recorded (or to say the tab must be reloaded after an update). Turn it off with "Show recording overlay on the call". |
 | Caption merging | `src/shared/merge.js` | Caption UIs rewrite rows as recognition improves and trim long rows. Rows are merged with word-level fuzzy alignment so corrections replace text instead of duplicating it. |
-| Storage/export | `src/background/index.js`, `src/shared/db.js`, `src/shared/lifecycle.js` | IndexedDB keeps the transcript and audio chunks as they stream in, so a crash or closed tab loses at most a few seconds. On call end (or tab close / stale session) it saves the audio (`.webm` or `.ogg`), then the `.md`. Only a download Chrome reports as complete counts as saved. The save is a job stored with the call, so it resumes after a restart. A sweep (Chrome start, install, every 2 minutes) ends stale calls, resumes saves and deletes calls 30 days after all their files were saved. |
+| Storage/export | `src/background/index.js`, `src/shared/db.js`, `src/shared/lifecycle.js` | IndexedDB keeps the transcript and audio chunks as they stream in, so a crash or closed tab loses at most a few seconds. On call end (or tab close / stale session) it saves the audio (`.webm` or `.ogg`), then the `.md`. Only a download Chrome reports as complete counts as saved. The save is a job stored with the call, so it resumes after a restart. A sweep (Chrome start, install, every 2 minutes, and when a failed save is due for its retry) ends stale calls, resumes saves and deletes calls 30 days after all their files were saved. |
 
 ## Adding a platform
 

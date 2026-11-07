@@ -57,9 +57,14 @@ function createContent(opts = {}) {
     fire(records = []) { if (this.connected) this.cb(records) }
   }
   const doc = new EventTarget()
+  // Elements main.js adds to <head> (the hidden-captions style), found again by id.
+  const head = new Set()
+  const append = (el) => { head.add(el) }
   Object.assign(doc, {
-    body: { nodeName: "BODY" }, head: { appendChild() {} }, documentElement: { appendChild() {} },
-    getElementById: () => null, createElement: () => ({ remove() {} }), title: "Huddle",
+    body: { nodeName: "BODY" }, head: { appendChild: append }, documentElement: { appendChild: append },
+    getElementById: (id) => [...head].find((el) => el.id === id) || null,
+    createElement: (tag) => { const el = { tagName: tag.toUpperCase(), id: "", textContent: "", remove() { head.delete(el) } }; return el },
+    title: "Huddle",
     // state.container: the caption container element, once the page shows captions.
     querySelector: (sel) => (state.container && sel && sel === adapter.captionContainer ? state.container : null),
   })
@@ -142,7 +147,7 @@ function createContent(opts = {}) {
   const ofType = (list, type) => list.filter((m) => m.type === type)
 
   return {
-    state, adapter, micEl, doc, win, toPage, fromPage, sent, runtime, chrome, overlays, observers, errors, advance, flush, setSettings, ofType,
+    state, adapter, micEl, doc, head, win, toPage, fromPage, sent, runtime, chrome, overlays, observers, errors, advance, flush, setSettings, ofType,
     get now() { return now },
   }
 }

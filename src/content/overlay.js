@@ -56,7 +56,8 @@
   }
 
   // warn: caption silence. dotWarn: anything the collapsed pill should flag (caption silence,
-  // audio error, audio stuck starting). A muted mic is normal for most of a call, so it isn't.
+  // audio error, audio stuck starting, a transcript or audio save failure). A muted mic is
+  // normal for most of a call, so it isn't.
   // state.orphan (a message): the extension was updated mid-call and this tab no longer records.
   // The pill then carries only that warning.
   function overlayModel(state, now) {
@@ -70,6 +71,9 @@
     const audioKey = state.audio === "starting" && now - startedAt > AUDIO_START_MS ? "stalled" : state.audio
     const audio = AUDIO[audioKey] || AUDIO.off
     const status = [captionRow(state, warn), { label: "Audio", ...audio }]
+    // The browser couldn't store the transcript (only shown while that is so).
+    const transcriptFailed = state.transcript === "save-failed"
+    if (transcriptFailed) status.push({ label: "Transcript", value: "save failed", level: "warn" })
     if (state.micRecorded === false) status.push({ label: "Mic", value: "not recorded", level: "plain" })
     else if (state.micMuted === true) status.push({ label: "Mic", value: "muted, not recorded", level: "warn" })
     else if (state.micMuted === false) status.push({ label: "Mic", value: "on", level: "ok" })
@@ -78,7 +82,7 @@
       elapsed: formatElapsed(now - startedAt),
       latest: last ? { speaker: last.speaker, text: last.text, live: !!last.live } : null,
       warn,
-      dotWarn: warn || audio.level === "warn",
+      dotWarn: warn || audio.level === "warn" || transcriptFailed,
       status,
       // Captions read off the page (CC): offer the "Hide captions on screen" setting right here.
       captionToggle: state.source === "cc" && state.canHideCaptions ? { hidden: !!state.captionsHidden } : null,

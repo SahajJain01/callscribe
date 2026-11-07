@@ -20,6 +20,7 @@
 //     still shows all of them (more than 200).
 //  9. A normal end stores the time the tab reported, not when the worker got to it.
 // 10. Restarting the worker doesn't push the sweep alarm back.
+// 11. A failed export is retried when its retry is due, not at the next 2-minute sweep.
 // Usage: node test/e2e/export.mjs   (CALLSCRIBE_EXT=<dir> loads the extension from elsewhere)
 import { spawn, execFileSync } from "node:child_process"
 import fs from "node:fs"
@@ -310,9 +311,11 @@ const cancelNextDownload = () => swEval(`(() => { globalThis.__cancelNext = 1; i
   const del = await popupAsk({ type: "delete", id })
   check(del && del.ok, "popup deleted the live call")
   const late = await chunk(id, 1)
-  check(late && late.error, `a chunk for the deleted call is refused (${JSON.stringify(late)})`)
+  check(late && late.error && late.closed, `a chunk for the deleted call is refused, closed for the tab (${JSON.stringify(late)})`)
+  const lateUpdate = await update(id, "deleteme", 9)
+  check(lateUpdate && lateUpdate.fatal && lateUpdate.closed, `a transcript save for the deleted call is refused, closed for the tab (${JSON.stringify(lateUpdate)})`)
   const restart = await start(id, "deleteme")
-  check(restart && restart.error, `the deleted id can't be started again (${JSON.stringify(restart)})`)
+  check(restart && restart.error && restart.closed, `the deleted id can't be started again (${JSON.stringify(restart)})`)
   check((await chunkCount(id)) === 0, "no chunk rows for the deleted call")
   const ghost = await chunk("slack-huddle-ghost-zz9", 0)
   check(ghost && ghost.error && (await chunkCount("slack-huddle-ghost-zz9")) === 0, `chunks for a never-started id are refused (${JSON.stringify(ghost)})`)
@@ -403,6 +406,24 @@ const cancelNextDownload = () => swEval(`(() => { globalThis.__cancelNext = 1; i
   check((await swEval(`typeof globalThis.__beforeRestart`)) === "undefined", "control: the worker really restarted (its globals are gone)")
   const after = await alarm()
   check(before && after === before, `sweep alarm not rescheduled by the restart (${before} -> ${after})`)
+}
+
+// ---------- 11. a failed export is retried at its due time (final review M-D)
+{
+  console.log("-- retry runs when it is due")
+  const t0 = now() - 3600 * 1000
+  const id = "slack-huddle-rt-due01"
+  const due = now() + 4000
+  check(await putRows([{ id, platform: "slack-huddle", platformName: "Slack huddle", title: "retrydue", url: "https://app.slack.com/client/T000/C000", startedAt: t0, updatedAt: t0 + 60000, endedAt: t0 + 60000, endReason: "left", tabId: 999999,
+    utterances: [{ speaker: "A", text: "retried", start: t0 + 1000, end: t0 + 2000 }], audio: { chunks: 0, bytes: 0 }, todo: 1,
+    exportErrors: ["transcript: FILE_FAILED"], export: { state: "pending", attempts: 1, nextAttemptAt: due, folder: "CallScribe", base: "retrydue_due01", files: { transcript: { state: "interrupted", error: "FILE_FAILED" } }, log: [] } }]) === true, "wrote a call whose first export attempt failed")
+  await kickSweep() // a sweep finds it not yet due
+  await sleep(1500)
+  check(filesFor("retrydue").length === 0, "control: not retried before it is due")
+  const sweepAt = await swEval(`chrome.alarms.get("sweep").then((a) => a ? a.scheduledTime : null)`)
+  check(sweepAt && sweepAt - now() > 60000, `control: the next sweep is over a minute away (${sweepAt && Math.round((sweepAt - now()) / 1000)} s)`)
+  const done = await waitFor(async () => { const s = await row(id); return s && s.export && s.export.state === "done" && s }, 20000)
+  check(done && filesFor("retrydue").length === 1 && done.export.attempts === 2, `retried once, at its due time, well before the next sweep (${done ? Math.round((done.exportDoneAt - due) / 1000) + " s after due" : "not retried"})`)
 }
 
 await send("Browser.close").catch(() => {})

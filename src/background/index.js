@@ -179,6 +179,7 @@ const runExport = L.singleFlight(async (id) => {
     if (!cur.export || cur.export.owner !== INSTANCE) return false
     L.settleExport(cur, Date.now())
   })
+  await scheduleRetry()
 })
 
 async function finalize(id, reason, at) {
@@ -230,7 +231,8 @@ function badge(text, tabId) {
   chrome.action.setBadgeText({ text: text || "", ...(tabId ? { tabId } : {}) })
 }
 
-const NOT_YOURS = { error: "not this tab's session", fatal: true }
+// closed: the session is over for this tab for good; the tab stops sending for it (final review M-A).
+const NOT_YOURS = { error: "not this tab's session", fatal: true, closed: true }
 const CLOSED = (st) => st === "running" || st === "done" || st === "failed" || st === "canceled"
 const LIBRARY = new Set(["list", "get", "delete", "export", "export-transcript", "export-audio", "chunks-for"])
 
@@ -239,10 +241,10 @@ async function ownWrite(id, sender, fn) {
   let verdict = { ok: true }
   const s = await serial(id, () => db.updateSession(id, (cur) => {
     if (!L.ownsSession(cur, sender)) return ((verdict = NOT_YOURS), false)
-    if (cur.export && CLOSED(cur.export.state)) return ((verdict = { error: "session closed", fatal: true }), false)
+    if (cur.export && CLOSED(cur.export.state)) return ((verdict = { error: "session closed", fatal: true, closed: true }), false)
     return fn(cur)
   }))
-  return s ? verdict : { error: "no such session", fatal: true }
+  return s ? verdict : { error: "no such session", fatal: true, closed: true }
 }
 
 async function handle(msg, sender) {
@@ -280,7 +282,7 @@ async function handle(msg, sender) {
         url: String(m.url || "").slice(0, 2000), startedAt, tabId, updatedAt: Date.now(), utterances: [], audio: { chunks: 0, bytes: 0 }, todo: 1,
       }
       const r = await serial(m.id, () => db.createSession(row))
-      if (r.result === "deleted") return { error: "session deleted", fatal: true }
+      if (r.result === "deleted") return { error: "session deleted", fatal: true, closed: true }
       if (r.result === "exists" && !L.ownsSession(r.session, sender)) return NOT_YOURS
       badge("REC", tabId)
       return { ok: true }
@@ -312,7 +314,7 @@ async function handle(msg, sender) {
       })
     case "session-end": {
       const s = await db.getSession(msg.id)
-      if (!s) return { error: "no such session", fatal: true }
+      if (!s) return { error: "no such session", fatal: true, closed: true }
       if (!L.ownsSession(s, sender)) return NOT_YOURS
       badge(null, tabId)
       await finalize(msg.id, String(msg.reason || "ended"), Number(msg.at))
@@ -392,6 +394,22 @@ async function sweep() {
     console.warn("[CallScribe] sweep failed", e)
   }
   await ensureAlarm()
+  await scheduleRetry()
+}
+
+// A failed download is retried when it is due (RETRY_DELAYS), not at the next 2-minute
+// sweep: a one-shot "retry" alarm wakes the worker for the earliest waiting retry and runs
+// a sweep. Chrome may hold it back to its minimum alarm delay (30 s for a packed extension).
+async function scheduleRetry() {
+  try {
+    const at = L.nextRetryAt(await db.todoSessions())
+    if (at === null) return
+    const cur = await chrome.alarms.get("retry")
+    if (cur && cur.scheduledTime <= at && cur.scheduledTime > Date.now()) return
+    await chrome.alarms.create("retry", { when: Math.max(at, Date.now() + 1000) })
+  } catch (e) {
+    console.warn("[CallScribe] retry alarm", e)
+  }
 }
 
 // Keep the existing schedule: recreating the alarm on every worker start would push it back.
@@ -403,5 +421,5 @@ async function ensureAlarm() {
   }
 }
 chrome.runtime.onStartup.addListener(sweep)
-chrome.alarms.onAlarm.addListener((a) => { if (a.name === "sweep") sweep() })
+chrome.alarms.onAlarm.addListener((a) => { if (a.name === "sweep" || a.name === "retry") sweep() })
 ensureAlarm()

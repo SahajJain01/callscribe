@@ -434,3 +434,98 @@ test("merged overlay lines follow every change: new text, finality, names, page 
   c.advance(1000)
   assert.deepEqual(last().map((l) => [l.text, l.live]), [["hello", false], [row.text, false]], "page row stayed live")
 })
+
+// ---- final review M-A: a final refusal for the whole session ends it quietly in the tab
+const GONE = { error: "no such session", fatal: true, closed: true }
+
+test("the worker says the live call is gone (deleted in the popup): no more saves or audio, no 'save failed' (final review M-A)", async () => {
+  let deleted = false
+  let refused = 0
+  const { c, id } = await joined({ reply: (m) => (deleted && m.id === id ? (m.type === "session-update" && refused++, GONE) : { ok: true }) })
+  c.fromPage({ type: "started", id })
+  c.advance(1000)
+  await c.flush()
+  deleted = true
+  for (let i = 0; i < 20 && !refused; i++) { c.advance(1000); await c.flush() } // the next periodic save gets the refusal
+  assert.equal(refused, 1, "control: a transcript save was refused")
+  const updates = c.ofType(c.sent, "session-update").length
+  for (let i = 0; i < 30; i++) { c.advance(1000); await c.flush() }
+  assert.equal(c.ofType(c.sent, "session-update").length - updates, 0, "the transcript is still being resent")
+  assert.deepEqual(c.ofType(c.toPage, "stop").map((m) => m.id), [id], "the recorder was not stopped")
+  const chunks = c.ofType(c.sent, "audio-chunk").length
+  c.fromPage(chunkMsg(id, 0))
+  await c.flush()
+  assert.equal(c.ofType(c.sent, "audio-chunk").length, chunks, "audio is still sent for the deleted call")
+  assert.equal(c.ofType(c.sent, "session-end").length, 0)
+  const ov = c.overlays.at(-1)
+  assert.ok(ov.removed, "the overlay still shows the deleted call")
+  assert.ok(!ov.updates.some((u) => u.audio === "save-failed" || u.transcript === "save-failed"), "'save failed' shown for a call the user deleted")
+  // Still on the same call: it isn't recorded again behind the user's back.
+  assert.equal(c.ofType(c.sent, "session-start").length, 1, "the deleted call was started again")
+  // The next call is recorded as usual.
+  await leave(c)
+  c.state.inCall = true
+  c.advance(1000)
+  await c.flush()
+  assert.equal(c.ofType(c.sent, "session-start").length, 2, "the next call wasn't recorded")
+})
+
+test("a final refusal of one audio chunk ends the session too when it says the call is closed (stale-finalised, M-A)", async () => {
+  const { c, id } = await joined({ reply: (m) => (m.type === "audio-chunk" ? { error: "session closed", fatal: true, closed: true } : { ok: true }) })
+  c.fromPage({ type: "started", id })
+  c.fromPage(chunkMsg(id, 0))
+  await c.flush()
+  const updates = c.ofType(c.sent, "session-update").length
+  for (let i = 0; i < 20; i++) { c.advance(1000); await c.flush() }
+  assert.equal(c.ofType(c.sent, "session-update").length, updates)
+  assert.deepEqual(c.ofType(c.toPage, "stop").map((m) => m.id), [id])
+})
+
+test("a fatal refusal of one transcript save that doesn't close the call isn't resent every heartbeat (M-A)", async () => {
+  const { c } = await joined({ reply: (m) => (m.type === "session-update" ? { error: "bad thing", fatal: true } : { ok: true }) })
+  for (let i = 0; i < 30; i++) { c.advance(1000); await c.flush() }
+  const n = c.ofType(c.sent, "session-update").length
+  assert.ok(n <= 4, `${n} transcript saves in 30 s after a fatal refusal`)
+  assert.equal(c.overlays.at(-1).updates.at(-1).transcript, "save-failed")
+})
+
+test("a transcript save that keeps failing shows 'save failed' in the overlay, and clears once one is stored (M-A)", async () => {
+  let failing = true
+  const { c } = await joined({ reply: (m) => (m.type === "session-update" && failing ? { error: "QuotaExceededError" } : { ok: true }) })
+  for (let i = 0; i < 20; i++) { c.advance(1000); await c.flush() }
+  assert.equal(c.overlays.at(-1).updates.at(-1).transcript, "save-failed")
+  failing = false
+  for (let i = 0; i < 20; i++) { c.advance(1000); await c.flush() }
+  assert.notEqual(c.overlays.at(-1).updates.at(-1).transcript, "save-failed")
+})
+
+// ---- final review M-B: 'stopped' answered at once (no live recorder) ends the session at once
+test("the page answers 'stop' synchronously (recorder never started): session-end isn't held for the 6 s timeout (M-B)", async () => {
+  const { c, id } = await joined()
+  c.fromPage({ type: "error", id, message: "no audio" })
+  const push = c.toPage.push.bind(c.toPage)
+  c.toPage.push = (m) => { const r = push(m); if (m.type === "stop") c.fromPage({ type: "stopped", id: m.id }); return r }
+  c.state.inCall = false
+  c.advance(5000) // the end is noticed after the 4 s grace
+  await c.flush()
+  assert.equal(c.ofType(c.sent, "session-end").length, 1, "session-end waited for the stop timeout")
+  c.advance(6000)
+  await c.flush()
+  assert.equal(c.ofType(c.sent, "session-end").length, 1)
+})
+
+// ---- final review M-C: orphaning gives Meet its own captions and layout back
+test("orphaned: the hidden-captions style is removed and the tile space is given back (M-C)", async () => {
+  const reclaim = []
+  const { c } = await joined({ settings: { hideCaptions: true }, adapter: { captionContainer: ".captions", reclaimCaptionSpace: (h) => reclaim.push(h) } })
+  assert.ok(c.doc.getElementById("callscribe-hide-captions"), "control: captions hidden while recording")
+  assert.equal(reclaim.at(-1), true)
+  c.runtime.id = undefined
+  c.advance(1000)
+  await c.flush()
+  assert.equal(c.doc.getElementById("callscribe-hide-captions"), null, "captions still hidden after the extension was updated")
+  assert.equal(reclaim.at(-1), false, "tile translate/scale rules left in place")
+  const n = reclaim.length
+  c.advance(5000)
+  assert.equal(reclaim.length, n, "still adjusting the page after orphaning")
+})

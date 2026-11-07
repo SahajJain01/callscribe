@@ -14,11 +14,15 @@
 // Every write to the service worker is acknowledged (see post/deliver): failures are retried
 // with backoff, a session's writes wait until its session-start is stored, and session-end is
 // sent only once every earlier write settled, so the last chunk is stored before export.
-// Audio that still can't be stored shows as Audio "save failed" in the overlay.
+// Audio or a transcript save that still can't be stored shows as "save failed" in the overlay.
+// A refusal the worker marks closed (the user deleted the live call in the popup, or it was
+// already finalised as stale) is final for the whole session: the tab stops sending for it,
+// stops its recorder and ends it quietly, and doesn't record that call again until it is left.
 //
 // After the extension is updated or reloaded, this script is orphaned (chrome.runtime.id is
 // gone, sendMessage throws). It then stops the recorder and render keepalive, drops the
-// session and shows the pill as a warning while a call is on screen.
+// session, gives the page its own captions and layout back and shows the pill as a warning
+// while a call is on screen.
 ;(function () {
   "use strict"
   const CS = globalThis.CallScribe
@@ -44,6 +48,7 @@
   let lastMuted
   let micOpen = false // what the MAIN-world mic gate was last told; it starts closed there too
   let orphaned = false
+  let refusedAt = 0 // the worker refused the session for good: last seen in that call (0 = not refused)
   const sessionStarts = []
   const owned = new Map() // session id -> { nextSeq } for recorders this tab started, until 'stopped'
   const stopWaiters = new Map() // session id -> fn, called on 'stopped'
@@ -74,8 +79,9 @@
       return Promise.resolve(undefined)
     }
   }
-  // One write, retried until the worker acknowledges it ({ok}). {error, fatal} (deleted session,
-  // wrong tab) is final. Resolves true when stored; onFail runs when it gives up.
+  // One write, retried until the worker acknowledges it ({ok}). {error, fatal} (bad message,
+  // deleted session, wrong tab) is final; {closed} too says the whole session is over for this
+  // tab. Resolves true when stored; onFail(reply) runs when it gives up.
   function deliver(msg, onFail) {
     return new Promise((resolve) => {
       let attempt = 0
@@ -99,18 +105,23 @@
   // Per-session outbox: nothing goes out before session-start is stored.
   function newBox(s, startMsg) {
     const box = { ready: false, waiting: [], pending: new Set() }
-    box.started = deliver(startMsg).then(() => {
+    box.started = deliver(startMsg, (r) => r.closed && sessionGone(s)).then(() => {
       box.ready = true
-      for (const [m, f] of box.waiting.splice(0)) post(s, m, f)
+      for (const [m, f, ok] of box.waiting.splice(0)) post(s, m, f, ok)
     })
     return box
   }
-  function post(s, msg, onFail) {
+  // onOk runs once the write is stored.
+  function post(s, msg, onFail, onOk) {
+    if (s.closed) return
     const box = s.box
-    if (!box.ready) return void box.waiting.push([msg, onFail])
-    const p = deliver(msg, onFail)
+    if (!box.ready) return void box.waiting.push([msg, onFail, onOk])
+    const p = deliver(msg, (r) => (r.closed ? sessionGone(s) : onFail && onFail(r)))
     box.pending.add(p)
-    p.then(() => box.pending.delete(p))
+    p.then((stored) => {
+      box.pending.delete(p)
+      if (stored && onOk) onOk()
+    })
   }
   async function drained(box) {
     await box.started
@@ -119,6 +130,26 @@
   function audioSaveFailed(s) {
     s.audioSaveFailed = true
     if (session === s) syncOverlay()
+  }
+  function transcriptSaveFailed(s, failed) {
+    if (s.transcriptSaveFailed === failed) return
+    s.transcriptSaveFailed = failed
+    if (session === s) syncOverlay()
+  }
+  // The worker refused the session for good. Nothing more is sent for it; if it is the live
+  // one it ends here without a session-end (the worker has nothing to finalise), with no
+  // "save failed" for a call the user deleted, and the same call isn't picked up again.
+  function sessionGone(s) {
+    if (s.closed) return
+    s.closed = true
+    s.box.waiting.length = 0
+    if (session !== s) return
+    session = null
+    refusedAt = Date.now()
+    names.clear()
+    stopCapture()
+    if (s.rec) toPage({ type: "stop", id: s.id })
+    syncOverlay()
   }
 
   // Your mic is only recorded while the call app positively says you're unmuted.
@@ -224,6 +255,7 @@
       startedAt: session.startedAt,
       source: streamActive() ? "feed" : captionsOn() ? "cc" : "none",
       audio: session.audioSaveFailed ? "save-failed" : session.audio,
+      transcript: session.transcriptSaveFailed ? "save-failed" : "ok",
       micMuted: lastMuted,
       micRecorded: Boolean(rec && !rec.paused && rec.includeMic),
       lines: overlayLines(session),
@@ -344,7 +376,7 @@
     const id = `${adapter.id}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
     session = {
       id, tracker: new CS.CaptionTracker(), utterances: new CS.UtteranceTracker(), startedAt: Date.now(), lastInCall: Date.now(), captionsTried: 0, savedAt: 0,
-      audio: "off", lastCaptionAt: 0, rec: null, rev: 0, audioSaveFailed: false,
+      audio: "off", lastCaptionAt: 0, rec: null, rev: 0, audioSaveFailed: false, transcriptSaveFailed: false, closed: false,
     }
     names.forEach((name, speaker) => session.utterances.setName(speaker, name))
     session.box = newBox(session, {
@@ -373,11 +405,16 @@
     // The caption feed plus every on-page caption it doesn't already hold (transcript C1 / lifecycle F8).
     const utterances = CS.mergeSources(s.utterances.snapshot(), s.tracker.snapshot())
     // rev: a retried older snapshot never overwrites a newer one. A save that keeps failing
-    // is redone from the latest state on the next heartbeat.
-    post(s, { type: "session-update", id: s.id, rev: ++s.rev, title: s.title, utterances, captionsOn: captionsOn() }, () => {
-      s.savedAt = 0
-      s.utterances.dirty = true
-    })
+    // is redone from the latest state on the next heartbeat; one refused outright (fatal) is
+    // not resent before the usual 15 s. Either way the overlay says the transcript isn't saved.
+    const msg = { type: "session-update", id: s.id, rev: ++s.rev, title: s.title, utterances, captionsOn: captionsOn() }
+    post(s, msg, (r) => {
+      if (!r.fatal) {
+        s.savedAt = 0
+        s.utterances.dirty = true
+      }
+      transcriptSaveFailed(s, true)
+    }, () => transcriptSaveFailed(s, false))
   }
 
   // Everything in the page that belongs to the live session: captions, keepalive, mic gate.
@@ -402,14 +439,15 @@
     // Local cleanup first: persistence below can find the extension gone.
     stopCapture()
     syncOverlay()
-    if (s.rec) toPage({ type: "stop", id: s.id })
     save(s, true)
     // When the call ended: the last time it was seen on screen, or now if the page is closing.
     const at = reason === "left" ? s.lastInCall : Date.now()
-    const end = () => drained(s.box).then(() => deliver({ type: "session-end", id: s.id, reason, at }))
+    const end = () => drained(s.box).then(() => !s.closed && deliver({ type: "session-end", id: s.id, reason, at }))
     if (!s.rec) return void end()
     // The page posts 'stopped' after the last chunk; finalize once everything before it is stored
     // (or after a timeout: the worker still takes chunks that arrive later, until it exports).
+    // The waiter is in place before 'stop' goes out: with no live recorder the page answers
+    // 'stopped' at once, from inside toPage.
     let finished = false
     const finish = () => {
       if (finished) return
@@ -419,6 +457,19 @@
     }
     stopWaiters.set(s.id, finish)
     setTimeout(finish, STOP_WAIT_MS)
+    toPage({ type: "stop", id: s.id })
+  }
+
+  // Undo what CallScribe did to the page's look: the hidden-captions style and the tile
+  // translate/scale rules (the call app's own captions and layout come back).
+  function restorePage() {
+    try {
+      const el = document.getElementById("callscribe-hide-captions")
+      if (el) el.remove()
+      if (adapter.reclaimCaptionSpace) adapter.reclaimCaptionSpace(false)
+    } catch (e) {
+      console.debug("[CallScribe] restoring the page failed", e)
+    }
   }
 
   // The extension was updated or reloaded under us: stop everything in the page, warn.
@@ -435,6 +486,7 @@
     } catch (e) {
       console.debug("[CallScribe] orphan cleanup failed", e)
     }
+    restorePage()
     syncOrphanOverlay()
   }
 
@@ -543,7 +595,12 @@
     if (orphaned) return syncOrphanOverlay()
     if (!contextAlive()) return becomeOrphan()
     const inCall = adapter.inCall()
-    if (inCall && !session && mayStartSession()) startSession()
+    // A refused call stays unrecorded until it has been left (off screen past the end grace).
+    if (refusedAt) {
+      if (inCall) refusedAt = Date.now()
+      else if (Date.now() - refusedAt > END_GRACE_MS) refusedAt = 0
+    }
+    if (inCall && !session && !refusedAt && mayStartSession()) startSession()
     if (!session) return
     if (inCall) {
       session.lastInCall = Date.now()

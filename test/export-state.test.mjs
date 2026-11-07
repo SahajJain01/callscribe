@@ -287,6 +287,27 @@ test("a late chunk is still taken after the call ended, until its audio export s
   assert.deepEqual(L.acceptChunk(ended({}, { state: "off" }), chunk()), { ok: true })
   for (const state of ["running", "done", "failed"]) assert.equal(L.acceptChunk(ended({}, { state }), chunk()).fatal, true, state)
 })
+test("refusals that end the whole call for the tab say so (closed); per-chunk ones don't (final review M-A)", () => {
+  assert.equal(L.acceptChunk(undefined, chunk()).closed, true)
+  assert.equal(L.acceptChunk(undefined, chunk(), { tombstone: true }).closed, true)
+  assert.equal(L.acceptChunk(live(), chunk({ tabId: 8 })).closed, true)
+  for (const state of ["running", "done", "failed", "canceled"]) assert.equal(L.acceptChunk(ended({}, { state }), chunk()).closed, true, state)
+  assert.equal(L.acceptChunk(live(), chunk({ size: 0 })).closed, undefined)
+  assert.equal(L.acceptChunk(live(), chunk({ mime: "text/html" })).closed, undefined)
+  assert.equal(L.acceptChunk(live({ audio: { chunks: 100, bytes: 50 * 1024 * 1024 } }), chunk({ now: start + 60 * 1000 })).closed, undefined)
+})
+
+// ---- retry timing (final review M-D): the worker wakes for the earliest due retry
+test("nextRetryAt: the earliest pending retry of an ended call, nothing when none is waiting", () => {
+  const a = ended({ id: "a" }, { state: "pending", attempts: 1, nextAttemptAt: start + 20 * min })
+  const b = ended({ id: "b" }, { state: "pending", attempts: 2, nextAttemptAt: start + 12 * min })
+  const fresh = ended({ id: "c" }) // never tried yet: the sweep that found it runs it now
+  const done = ended({ id: "d" }, { state: "done" })
+  assert.equal(L.nextRetryAt([a, b, fresh, done, live()]), start + 12 * min)
+  assert.equal(L.nextRetryAt([fresh, done, live()]), null)
+  assert.equal(L.nextRetryAt([]), null)
+})
+
 test("chunk shape: size, sequence and MIME type are checked (I2)", () => {
   assert.equal(L.acceptChunk(live(), chunk({ size: 0 })).fatal, true)
   assert.equal(L.acceptChunk(live(), chunk({ size: L.MAX_CHUNK_BYTES + 1 })).fatal, true)

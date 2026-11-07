@@ -202,6 +202,17 @@ export function settleExport(s, now) {
   return s
 }
 
+/** When the earliest waiting export retry is due (ended calls already tried once), or null. */
+export function nextRetryAt(sessions) {
+  let at = null
+  for (const s of sessions) {
+    const job = s && s.endedAt && s.export
+    if (!job || job.state !== "pending" || !(job.attempts > 0) || !Number.isFinite(job.nextAttemptAt)) continue
+    if (at === null || job.nextAttemptAt < at) at = job.nextAttemptAt
+  }
+  return at
+}
+
 /** Retention (user decision): 30 days after a confirmed export. Never for failed, off or legacy rows. */
 export function retentionDue(s, now) {
   return Boolean(s && s.export && s.export.state === "done" && s.exportDoneAt && now - s.exportDoneAt >= RETENTION_MS)
@@ -233,11 +244,13 @@ export function singleFlight(fn) {
 /** Whether to store an audio chunk. { ok } or { error, fatal } (fatal: the tab must not retry). */
 export function acceptChunk(s, { tabId, seq, size, mime, now }, { tombstone } = {}) {
   const no = (error) => ({ error, fatal: true })
-  if (tombstone) return no("session deleted")
-  if (!s) return no("no such session")
-  if (s.tabId !== tabId) return no("session belongs to another tab")
+  // closed: nothing more for this session will be taken from this tab (the tab ends it).
+  const gone = (error) => ({ error, fatal: true, closed: true })
+  if (tombstone) return gone("session deleted")
+  if (!s) return gone("no such session")
+  if (s.tabId !== tabId) return gone("session belongs to another tab")
   const st = s.export && s.export.state
-  if (st === "running" || st === "done" || st === "failed" || st === "canceled") return no("session closed")
+  if (st === "running" || st === "done" || st === "failed" || st === "canceled") return gone("session closed")
   if (!Number.isInteger(seq) || seq < 0 || seq > 1e7) return no("bad seq")
   if (!Number.isInteger(size) || size <= 0 || size > MAX_CHUNK_BYTES) return no("bad chunk size")
   if (typeof mime !== "string" || !AUDIO_MIME.test(mime)) return no("bad mime")
