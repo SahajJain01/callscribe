@@ -84,7 +84,26 @@ await send("Page.navigate", { url: "https://app.slack.com/client/T000/C000" + (a
 const hostRect = () => evalPage(`(()=>{const h=document.getElementById('callscribe-overlay'); if(!h) return null; const r=h.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, vw: innerWidth, vh: innerHeight }})()`)
 const setShowOverlay = (on) => send("Runtime.evaluate", { expression: `chrome.storage.local.get("settings").then((r) => chrome.storage.local.set({ settings: { ...(r.settings || {}), showOverlay: ${on} } }))`, awaitPromise: true }, sws)
 // The overlay's host element exposes its state as attributes (its shadow root is closed).
-const overlayInfo = () => evalPage(`(()=>{const h=document.getElementById('callscribe-overlay'); return h ? { state: h.getAttribute('data-state'), latest: h.getAttribute('data-latest') } : null})()`)
+const overlayInfo = () => evalPage(`(()=>{const h=document.getElementById('callscribe-overlay'); return h ? { state: h.getAttribute('data-state'), latest: h.getAttribute('data-latest'), cc: h.getAttribute('data-cc') } : null})()`)
+// Real mouse click on an element inside the overlay's closed shadow root, found by class via a piercing DOM walk.
+async function clickShadow(cls) {
+  const { result } = await send("DOM.getDocument", { depth: -1, pierce: true }, sessionId)
+  const find = (n) => {
+    const a = n.attributes || []
+    for (let i = 0; i < a.length; i += 2) if (a[i] === "class" && a[i + 1].split(" ").includes(cls)) return n
+    for (const c of [...(n.children || []), ...(n.shadowRoots || [])]) { const f = find(c); if (f) return f }
+    return null
+  }
+  const node = find(result.root)
+  if (!node) return false
+  const { result: { model } } = await send("DOM.getBoxModel", { nodeId: node.nodeId }, sessionId)
+  const q = model.content
+  const x = (q[0] + q[2]) / 2, y = (q[1] + q[5]) / 2
+  for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+    await send("Input.dispatchMouseEvent", { type, x, y, button: type === "mouseMoved" ? "none" : "left", buttons: type === "mousePressed" ? 1 : 0, clickCount: type === "mouseMoved" ? 0 : 1 }, sessionId)
+  }
+  return true
+}
 async function waitOverlay(present, ms) {
   for (const end = Date.now() + ms; Date.now() < end; await sleep(100)) if (Boolean(await overlayInfo()) === present) return true
   return false
@@ -150,6 +169,19 @@ for (let i = 0; i < 40; i++) {
     const shot = await send("Page.captureScreenshot", { format: "png" }, sessionId)
     fs.writeFileSync(path.join(work, "overlay.png"), Buffer.from(shot.result.data, "base64"))
     console.log("overlay screenshot:", path.join(work, "overlay.png"))
+    // CC mode: the card's Hide/Show button flips the "Hide captions on screen" setting in place.
+    const ccShown = () => evalPage(`document.querySelector('.p-huddle_closed_captions').getBoundingClientRect().right > 0`)
+    const hideSetting = () => swEval(`chrome.storage.local.get("settings").then((r) => r.settings.hideCaptions)`)
+    check((await overlayInfo())?.cc === "hidden" && !(await ccShown()), "CC mode: card offers the captions button; captions start hidden")
+    await clickShadow("cc")
+    await sleep(600)
+    check((await overlayInfo())?.cc === "shown" && (await ccShown()) && (await hideSetting()) === false,
+      "captions button shows the captions on the page and turns the setting off")
+    await clickShadow("cc")
+    await sleep(600)
+    check((await overlayInfo())?.cc === "hidden" && !(await ccShown()) && (await hideSetting()) === true,
+      "captions button hides them again and turns the setting back on")
+    check(await evalPage(`document.activeElement && document.activeElement.id === 'cs-focus-probe'`), "captions button keeps page focus")
     // Collapse via the card header: the pill goes back to the saved spot (clamped to the right edge),
     // not to where the wider card had to be pushed.
     const hr = await hostRect()

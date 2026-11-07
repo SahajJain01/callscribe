@@ -78,6 +78,17 @@
       micRecorded: Boolean(settings.recordAudio && settings.includeMic),
       lines: feed.length ? feed : session.tracker.view(),
       lastCaptionAt: session.lastCaptionAt,
+      canHideCaptions: Boolean(adapter.captionContainer),
+      captionsHidden: settings.hideCaptions !== false,
+    }
+  }
+  // The overlay's Hide/Show button flips the same setting as the popup's "Hide captions on screen".
+  async function setCaptionsHidden(hide) {
+    try {
+      const cur = (await chrome.storage.local.get("settings")).settings || {}
+      await chrome.storage.local.set({ settings: { ...cur, hideCaptions: hide } })
+    } catch (e) {
+      console.debug("[CallScribe] overlay caption toggle failed", e)
     }
   }
   // After the extension is updated or reloaded mid-call this script is orphaned
@@ -96,7 +107,7 @@
         overlay = null
         return
       }
-      if (!overlay) overlay = CS.createOverlay({ doc: document, storage: chrome.storage.local })
+      if (!overlay) overlay = CS.createOverlay({ doc: document, storage: chrome.storage.local, onToggleCaptions: setCaptionsHidden })
       overlay.update(overlayState())
     } catch (e) {
       console.debug("[CallScribe] overlay sync failed", e)
