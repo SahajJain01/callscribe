@@ -136,25 +136,31 @@
   /**
    * One transcript from Meet's caption feed and the captions read from the page. Each source
    * may cover only part of the call (the feed starts late, or dies and CC takes over), so the
-   * export is the union. A page line is dropped when feed lines from the same time (within 3 s)
-   * and a compatible speaker already hold most (60%) of its words: the feed has better timing
-   * and speakers. When the page line holds more, it is kept, and feed lines it contains (90%)
-   * are dropped instead: the feed died mid-sentence. "Unknown…" and "You" match any speaker.
-   * Sorted by start; extra fields are kept.
+   * export is the union, and losing real speech is worse than a repeated fragment: when unsure,
+   * both lines are kept.
+   * - A page line is dropped only when the feed lines near it (within 3 s, same speaker) hold
+   *   all of it, in order: the feed has better timing and speakers.
+   * - Otherwise the page line is kept whole, and the feed lines it holds all of are dropped (the
+   *   feed started late inside the row, or died mid-sentence).
+   * "Holds all of" compares tokens in order (longest common subsequence) and counts only runs of
+   * two or more tokens, so scattered shared words, or shared characters in scripts without
+   * spaces (character pairs, in effect), don't make different speech the same. A long line may
+   * differ in one token in ten inside it (a re-recognised word), never at its start or end.
+   * "Unknown…" and "You" match any speaker, and so do "Bob" and "Bob (Acme)"; the kept line shows
+   * the fuller name. Sorted by start; extra fields are kept; the inputs are not changed.
    */
   const NEAR_MS = 3000
   const anyone = (s) => !s || /^unknown/i.test(s) || s === "You"
-  const sameSpeaker = (a, b) => a.speaker === b.speaker || anyone(a.speaker) || anyone(b.speaker)
-  function share(part, whole) {
-    if (!part.length) return 1
-    const pool = new Map()
-    for (const k of whole) pool.set(k, (pool.get(k) || 0) + 1)
-    let hit = 0
-    for (const k of part) if (pool.get(k)) {
-      hit++
-      pool.set(k, pool.get(k) - 1)
-    }
-    return hit / part.length
+  const unnamed = (s) => !s || /^unknown/i.test(s)
+  // "Bob (Acme)" -> "Bob": a trailing "(…)" (organisation, pronouns, guest) only one source shows.
+  const bare = (s) => String(s || "").replace(/\s*\([^()]*\)$/, "").trim()
+  const sameName = (a, b) => a === b || (Boolean(a) && Boolean(b) && (bare(a) === b || a === bare(b)))
+  const sameSpeaker = (a, b) => sameName(a.speaker, b.speaker) || anyone(a.speaker) || anyone(b.speaker)
+  // The name for a line both sources hold: a real name over an unnamed one, the fuller over the bare one.
+  function fuller(a, b) {
+    if (unnamed(a) && !anyone(b)) return b
+    if (a !== b && sameName(a, b) && String(b).length > String(a).length) return b
+    return a
   }
   // Token keys of a line, remembered: the same finished lines are compared on every save.
   const keyCache = new Map()
@@ -167,6 +173,66 @@
     }
     return k
   }
+  // Alignment cost cap (tokens x tokens). Beyond it nothing counts as held, so both lines are kept.
+  const MAX_CELLS = 2000000
+  /**
+   * Which of a's tokens b holds, in order: a's index -> index into b, or -1. Only runs of at
+   * least two tokens that run together in both count (one token when a line has only one).
+   */
+  function align(a, b) {
+    const n = a.length, m = b.length
+    const at = new Int32Array(n).fill(-1)
+    if (!n || !m || n * m > MAX_CELLS) return at
+    const w = m + 1
+    const dp = new Uint32Array((n + 1) * w)
+    for (let i = 1; i <= n; i++) {
+      for (let j = 1; j <= m; j++) {
+        dp[i * w + j] = a[i - 1] === b[j - 1] ? dp[(i - 1) * w + j - 1] + 1 : Math.max(dp[(i - 1) * w + j], dp[i * w + j - 1])
+      }
+    }
+    const pairs = []
+    for (let i = n, j = m; i > 0 && j > 0;) {
+      if (a[i - 1] === b[j - 1] && dp[i * w + j] === dp[(i - 1) * w + j - 1] + 1) {
+        pairs.push([i - 1, j - 1])
+        i--
+        j--
+      } else if (dp[(i - 1) * w + j] >= dp[i * w + j - 1]) i--
+      else j--
+    }
+    pairs.reverse()
+    const minRun = Math.min(2, n, m)
+    for (let s = 0; s < pairs.length;) {
+      let e = s + 1
+      while (e < pairs.length && pairs[e][0] === pairs[e - 1][0] + 1 && pairs[e][1] === pairs[e - 1][1] + 1) e++
+      if (e - s >= minRun) for (let r = s; r < e; r++) at[pairs[r][0]] = pairs[r][1]
+      s = e
+    }
+    return at
+  }
+  // Does b hold all of a? Up to one token in ten may differ inside a, never its first or last.
+  // A line of one or two tokens is only held by one about as short ("No." is not inside a long line).
+  function holds(at, bLength) {
+    const n = at.length
+    if (!n) return true
+    if (n <= 2 && bLength > n + 2) return false
+    if (at[0] < 0 || at[n - 1] < 0) return false
+    let miss = 0
+    for (let i = 0; i < n; i++) if (at[i] < 0) miss++
+    return miss <= Math.floor(n / 10)
+  }
+  // Alignments remembered: the overlay and every save compare the same finished lines again.
+  const alignCache = new Map()
+  function alignTexts(aText, bTexts) {
+    const id = aText + "\u0000" + bTexts.join("\u0001")
+    let r = alignCache.get(id)
+    if (!r) {
+      if (alignCache.size >= 4096) alignCache.clear()
+      const b = [].concat(...bTexts.map(lineKeys))
+      r = { at: align(lineKeys(aText), b), length: b.length }
+      alignCache.set(id, r)
+    }
+    return r
+  }
   function mergeSources(feed, dom) {
     feed = feed || []
     dom = dom || []
@@ -176,6 +242,7 @@
     const fs = feed.slice().sort((x, y) => x.start - y.start)
     const longest = fs.reduce((m, f) => Math.max(m, f.end - f.start), 0)
     const dropped = new Set()
+    const rename = new Map()
     const kept = []
     for (const d of dom) {
       // Last feed line starting by d.end + NEAR_MS, then back while one could still end near d.
@@ -188,19 +255,39 @@
       const near = []
       for (let i = lo - 1; i >= 0 && fs[i].start >= d.start - NEAR_MS - longest; i--) {
         const f = fs[i]
-        if (f.end >= d.start - NEAR_MS && sameSpeaker(f, d)) near.push({ f, k: lineKeys(f.text) })
+        if (f.end >= d.start - NEAR_MS && sameSpeaker(f, d)) near.push(f)
       }
       if (!near.length) {
         kept.push(d)
         continue
       }
-      const dk = lineKeys(d.text)
-      if (share(dk, near.flatMap((x) => x.k)) >= 0.6) continue
-      kept.push(d)
-      for (const x of near) if (share(x.k, dk) >= 0.9) dropped.add(x.f)
+      near.reverse() // start order: the near feed lines read as one run of speech
+      const { at, length } = alignTexts(d.text, near.map((f) => f.text))
+      if (holds(at, length)) {
+        // The feed has all of it. The feed lines holding it take the page's name if fuller.
+        const owner = []
+        near.forEach((f, x) => { for (let k = lineKeys(f.text).length; k > 0; k--) owner.push(x) })
+        for (const j of at) if (j >= 0) {
+          const f = near[owner[j]]
+          const name = fuller(rename.has(f) ? rename.get(f) : f.speaker, d.speaker)
+          if (name !== f.speaker) rename.set(f, name)
+        }
+        continue
+      }
+      // The page line has speech the feed lacks: keep it whole, drop the feed lines it holds.
+      let speaker = d.speaker
+      for (const f of near) {
+        const r = alignTexts(f.text, [d.text])
+        if (!holds(r.at, r.length)) continue
+        dropped.add(f)
+        speaker = fuller(speaker, f.speaker)
+      }
+      kept.push(speaker === d.speaker ? d : { ...d, speaker })
     }
+    const out = []
+    for (const f of feed) if (!dropped.has(f)) out.push(rename.has(f) ? { ...f, speaker: rename.get(f) } : f)
     // Array sort is stable: lines starting together keep feed-then-page order.
-    return feed.filter((f) => !dropped.has(f)).concat(kept).sort((a, b) => a.start - b.start)
+    return out.concat(kept).sort((a, b) => a.start - b.start)
   }
 
   /**
