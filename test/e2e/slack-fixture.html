@@ -60,6 +60,7 @@ async function run() {
   r1.remove()
   const r3 = caption("Alice Nguyen", "Great, ship it on Friday")
   await sleep(5000)
+  if (location.search.includes("stay")) return log("staying") // crash test: never leave
   document.getElementById("huddle").innerHTML = "" // leave the huddle
   log("left")
 }

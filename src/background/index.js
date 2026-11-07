@@ -2,6 +2,7 @@
 // audio backup to Downloads/CallScribe/ when a call ends (or its tab disappears).
 import { getSession, putSession, updateSession, listSessions, putChunk, getChunks, deleteSession } from "../shared/db.js"
 import { formatTranscript, fileBase } from "../shared/format.js"
+import { endTime } from "../shared/lifecycle.js"
 
 const DEFAULTS = { recordAudio: true, includeMic: true, autoCaptions: true, hideCaptions: true, showOverlay: true, autoDownload: true, folder: "CallScribe" }
 const STALE_MS = 2 * 60 * 1000
@@ -69,7 +70,7 @@ export async function exportAudio(id) {
 async function finalize(id, reason) {
   const s = await updateSession(id, (cur) => {
     if (cur.endedAt) return cur
-    cur.endedAt = Math.max(cur.updatedAt || cur.startedAt, Date.now() - (reason === "stale" ? STALE_MS : 0))
+    cur.endedAt = endTime(cur, reason, Date.now())
     cur.endReason = reason
     return cur
   })
