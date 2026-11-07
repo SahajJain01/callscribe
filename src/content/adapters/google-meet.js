@@ -168,14 +168,16 @@
 
   // Name on each participant tile, keyed by the same device id the caption stream uses. One
   // person can have several tiles (camera and "Alice (Presentation)"): one name per id, the
-  // shortest, without a trailing "(...)", so it doesn't flip between tiles (transcript M10).
+  // shortest, so it doesn't flip between tiles (transcript M10). Only a presentation suffix is
+  // removed; "Alice (she/her)" or "Bob (Acme)" is the person's name as shown and is kept.
+  const PRESENTING = /\s*\((?:[^()]*\s)?(?:presentation|presenting|präsentation|présentation|presentación|apresentação|presentazione|presentatie|prezentacja|презентация|bản trình bày|đang trình bày|プレゼンテーション|演示|簡報|简报|프레젠테이션|발표|การนำเสนอ)(?:\s[^()]*)?\)$/i
   function participantNames() {
     const byId = new Map()
     for (const tile of document.querySelectorAll("[data-participant-id]")) {
       const id = tile.getAttribute("data-participant-id")
       const span = [...tile.querySelectorAll("span.notranslate")].find((s) => !s.children.length && text(s))
       if (!id || !span) continue
-      const name = text(span).replace(/\s*\([^()]*\)$/, "") || text(span)
+      const name = text(span).replace(PRESENTING, "") || text(span)
       const had = byId.get(id)
       if (!had || name.length < had.length || (name.length === had.length && name < had)) byId.set(id, name)
     }

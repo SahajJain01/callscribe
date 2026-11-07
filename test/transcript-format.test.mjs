@@ -95,3 +95,18 @@ test("M6: a turn whose first line is an estimate is marked ~", () => {
   ])
   assert.equal(t[0].estimated, true)
 })
+
+test("Task 3 review minor: a leading ~~~ can't open a code fence, and ~~ can't strike text through", () => {
+  const md = formatTranscript(base({ utterances: [
+    { speaker: "A", text: "~~~ everything after this would be code", start, end: start + 1000 },
+    { speaker: "B", text: "that is ~~not~~ fine", start: start + 9000, end: start + 9500 },
+  ] }))
+  assert.doesNotMatch(md, /^~~~/m)
+  assert.doesNotMatch(md, /(^|[^\\])~~not/)
+  assert.match(md, /^\\~\\~\\~ everything after this would be code$/m)
+})
+
+test("Task 3 review minor: HTML entities in captions stay literal text ('&lt;' is not shown as '<')", () => {
+  const md = formatTranscript(base({ utterances: [{ speaker: "A", text: "type &lt;div&gt; or &#60; and AT&T stays", start, end: start + 1000 }] }))
+  assert.match(md, /^type \\&lt;div\\&gt; or \\&#60; and AT&T stays$/m)
+})

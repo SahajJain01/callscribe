@@ -145,3 +145,16 @@ test("M4: Meet keeps mapping 'You' to your name after the tile button that told 
   meetCaptions(false)
   assert.equal(meet.captionRows()[0].speaker, "An Nguyen")
 })
+
+test("Task 3 review I3: a tile name with a pronoun or org suffix is kept as written", () => {
+  useDocument(new El("body", { kids: [tile("spaces/s/devices/4", "Alice (she/her)"), tile("spaces/s/devices/5", "Bob (Acme)")] }))
+  assert.deepEqual(new Map(meet.participantNames()), new Map([["spaces/s/devices/4", "Alice (she/her)"], ["spaces/s/devices/5", "Bob (Acme)"]]))
+})
+
+test("Task 3 review I3: camera tile 'Bob (Acme)' and presentation tile 'Bob (Acme) (Presentation)' give 'Bob (Acme)' in either order", () => {
+  const body = new El("body", { kids: [tile("spaces/s/devices/6", "Bob (Acme) (Presentation)"), tile("spaces/s/devices/6", "Bob (Acme)")] })
+  useDocument(body)
+  assert.deepEqual(meet.participantNames(), [["spaces/s/devices/6", "Bob (Acme)"]])
+  body.children.reverse()
+  assert.deepEqual(meet.participantNames(), [["spaces/s/devices/6", "Bob (Acme)"]])
+})

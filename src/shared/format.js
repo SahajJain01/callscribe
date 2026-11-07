@@ -46,10 +46,13 @@ export function fileBase(session) {
 const oneLine = (s) => String(s == null ? "" : s).replace(/[\s\u2028\u2029]+/g, " ").trim()
 // Inline metacharacters: emphasis, code, links and images ("[", so "![x](y)" is plain text),
 // HTML and autolinks ("<"). "_" only where it could start or end emphasis, not inside a word,
-// so snake_case names stay readable.
+// so snake_case names stay readable. "~" (strikethrough, and "~~~" code fences). "&" only where
+// it starts an entity, so "&lt;" stays literal and "AT&T" is untouched. A bare "http://…" in a
+// caption may still be auto-linked by GFM renderers; it is the caption's own text, not our link.
 function inline(s) {
   return oneLine(s)
-    .replace(/[\\`*[\]<>]/g, "\\$&")
+    .replace(/[\\`*[\]<>~]/g, "\\$&")
+    .replace(/&(?=#?[\p{L}\p{N}]+;)/gu, "\\&")
     .replace(/(^|[^\p{L}\p{N}])_|_(?=[^\p{L}\p{N}]|$)/gu, (m) => m.replace("_", "\\_"))
 }
 // A whole line of text: inline escapes, and a start that would make it a heading, list, quote,
