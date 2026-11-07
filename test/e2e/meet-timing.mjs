@@ -12,6 +12,7 @@ import fs from "node:fs"
 import https from "node:https"
 import os from "node:os"
 import path from "node:path"
+import { attackerObjectChecks } from "./attacker-checks.mjs"
 
 const repo = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..")
 const chrome = process.env.CHROME || path.join(os.homedir(), ".hermes/tools/chromium-1208/chrome-linux64/chrome")
@@ -28,6 +29,11 @@ if (process.env.WITHOUT_KEEPALIVE) {
   for (const cs of m.content_scripts) cs.js = cs.js.filter((j) => !j.includes("render-keepalive"))
   fs.writeFileSync(path.join(ext, "manifest.json"), JSON.stringify(m, null, 2))
   console.log("variant: WITHOUT render keepalive")
+}
+// CALLSCRIBE_EXT=<dir>: load the extension from another checkout (see run.mjs).
+if (process.env.CALLSCRIBE_EXT) {
+  ext = path.resolve(process.env.CALLSCRIBE_EXT)
+  console.log("extension loaded from", ext)
 }
 
 execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1", "-subj", "/CN=meet.google.com",
@@ -127,6 +133,7 @@ check(atk && atk.forged > 5, "attacker forged caption feeds and keepalive-off du
 check(atk && atk.ports === 0 && atk.nodes === 0 && atk.nodeEvents === 0, "attacker could not obtain the private channel")
 check(atk && atk.audioBytes === 0 && atk.messages === 0 && atk.detailReads === 0 && atk.protoHits === 0 && atk.sessionIds.length === 0,
   "attacker read no CallScribe traffic (captions, audio, session id)")
+attackerObjectChecks(atk, check, { meet: true })
 
 await send("Browser.close").catch(() => {})
 proc.kill(); server.close()

@@ -14,6 +14,18 @@
 //   mic {on}                mute gate for your mic. Starts closed; only an explicit on opens it.
 //   status                  -> status {recording, id, paused, state, remote, mic, peers, sources, micOn, includeMic, micGain}
 // Closed peer connections and ended tracks are dropped every few seconds and before each start.
+//
+// Page scripts must not reach the recording: the recorder, the AudioContext, its nodes and
+// params, the blobs and buffers never pass through anything a page script can patch. Every
+// built-in used here is captured when this file loads (before any page script exists) and only
+// those captured functions are called, with Reflect.apply. That covers prototype methods and
+// accessors (MediaRecorder, WebAudio, MediaStream/Track, RTCPeerConnection, Blob/FileReader),
+// Map/Set methods (their entries are our tracks and nodes), timers and event listening.
+// No array iteration, spread or promise chaining touches our objects (those consult
+// patchable built-ins). Events are acted on only when the browser fired them (isTrusted,
+// an unforgeable own property), so dispatchEvent() from page code changes nothing.
+// What a page script can still do: feed its own media into the call (e.g. a WebRTC connection
+// of its own whose remote audio we record like any other), or stop its own tracks.
 ;(function () {
   "use strict"
   if (window.__callscribeAudioHook) return
@@ -26,21 +38,89 @@
 
   // --- natives, captured before any page script can patch them
   const apply = Reflect.apply
+  const construct = Reflect.construct
+  const getOwn = Object.getOwnPropertyDescriptor
+  const getProto = Object.getPrototypeOf
+  const call = (fn, self, ...args) => apply(fn, self, args)
+  // A prototype member (method, getter or setter), looked up along the chain now, at load.
+  function member(C, key, kind) {
+    for (let o = C && C.prototype; o; o = getProto(o)) {
+      const d = getOwn(o, key)
+      if (d) return kind === "get" ? d.get : kind === "set" ? d.set : d.value
+    }
+  }
   const addListener = EventTarget.prototype.addEventListener
   const removeListener = EventTarget.prototype.removeEventListener
   const dispatch = EventTarget.prototype.dispatchEvent
-  const relatedTargetOf = Object.getOwnPropertyDescriptor(MouseEvent.prototype, "relatedTarget").get
-  const detailOf = Object.getOwnPropertyDescriptor(CustomEvent.prototype, "detail").get
+  const listen = (target, type, fn, capture) => call(addListener, target, type, fn, capture === true)
+  const unlisten = (target, type, fn, capture) => call(removeListener, target, type, fn, capture === true)
+  // isTrusted is an unforgeable own property of every Event: false for dispatchEvent() from script.
+  const trusted = (ev) => Boolean(ev) && ev.isTrusted === true
+  const relatedTargetOf = member(MouseEvent, "relatedTarget", "get")
+  const detailOf = member(CustomEvent, "detail", "get")
   const hasOwn = Object.prototype.hasOwnProperty
   const NativeCustomEvent = CustomEvent
-  const NativeAudioContext = window.AudioContext
-  const NativeMediaStream = window.MediaStream
+  const own = (m, k) => (apply(hasOwn, m, [k]) ? m[k] : undefined)
+  const scriptsOf = member(Document, "scripts", "get")
+  const setTimer = window.setTimeout
+  const setRepeat = window.setInterval
+  const later = (fn, ms) => call(setTimer, window, fn, ms)
+  const noop = () => {}
+  const promiseThen = Promise.prototype.then
+  const settle = (p) => { try { call(promiseThen, p, noop, noop) } catch {} }
+  const map = {
+    get: Map.prototype.get, set: Map.prototype.set, has: Map.prototype.has, delete: Map.prototype.delete,
+    forEach: Map.prototype.forEach, clear: Map.prototype.clear, size: member(Map, "size", "get"),
+  }
+  const set = { add: Set.prototype.add, has: Set.prototype.has, delete: Set.prototype.delete, forEach: Set.prototype.forEach, size: member(Set, "size", "get") }
+  const NativeMap = Map
+  const NativeSet = Set
+
+  // Recording
   const NativeMediaRecorder = window.MediaRecorder
   const isTypeSupported = NativeMediaRecorder && NativeMediaRecorder.isTypeSupported
-  const blobDataOf = window.BlobEvent && Object.getOwnPropertyDescriptor(BlobEvent.prototype, "data").get
-  const blobArrayBuffer = Blob.prototype.arrayBuffer
-  const own = (m, k) => (apply(hasOwn, m, [k]) ? m[k] : undefined)
-  const scriptsOf = Object.getOwnPropertyDescriptor(Document.prototype, "scripts").get
+  const R = {
+    start: member(NativeMediaRecorder, "start"), stop: member(NativeMediaRecorder, "stop"),
+    pause: member(NativeMediaRecorder, "pause"), resume: member(NativeMediaRecorder, "resume"),
+    state: member(NativeMediaRecorder, "state", "get"),
+  }
+  const blobDataOf = member(window.BlobEvent, "data", "get")
+  const blobSize = member(Blob, "size", "get")
+  const NativeFileReader = window.FileReader
+  const readAsArrayBuffer = member(NativeFileReader, "readAsArrayBuffer")
+  const readerResult = member(NativeFileReader, "result", "get")
+  // Web Audio
+  const NativeAudioContext = window.AudioContext
+  const A = {
+    source: member(NativeAudioContext, "createMediaStreamSource"), dest: member(NativeAudioContext, "createMediaStreamDestination"),
+    constant: member(NativeAudioContext, "createConstantSource"), gain: member(NativeAudioContext, "createGain"),
+    resume: member(NativeAudioContext, "resume"), close: member(NativeAudioContext, "close"),
+    time: member(NativeAudioContext, "currentTime", "get"), state: member(NativeAudioContext, "state", "get"),
+    connect: member(window.AudioNode, "connect"), disconnect: member(window.AudioNode, "disconnect"),
+    offset: member(window.ConstantSourceNode, "offset", "get"), startSource: member(window.ConstantSourceNode, "start"),
+    gainParam: member(window.GainNode, "gain", "get"), stream: member(window.MediaStreamAudioDestinationNode, "stream", "get"),
+    setValue: member(window.AudioParam, "value", "set"), setValueAtTime: member(window.AudioParam, "setValueAtTime"),
+    setTargetAtTime: member(window.AudioParam, "setTargetAtTime"), cancel: member(window.AudioParam, "cancelScheduledValues"),
+  }
+  // Media streams and WebRTC (the app's objects: read through captured accessors so a patched
+  // getter can't lie to us about them)
+  const NativeMediaStream = window.MediaStream
+  const streamAddTrack = member(NativeMediaStream, "addTrack")
+  const streamAudioTracks = member(NativeMediaStream, "getAudioTracks")
+  const trackKind = member(window.MediaStreamTrack, "kind", "get")
+  const trackState = member(window.MediaStreamTrack, "readyState", "get")
+  const NativePC = window.RTCPeerConnection
+  const pcConnState = member(NativePC, "connectionState", "get")
+  const pcSigState = member(NativePC, "signalingState", "get")
+  const pcReceivers = member(NativePC, "getReceivers")
+  const receiverTrack = member(window.RTCRtpReceiver, "track", "get")
+  const trackEventTrack = member(window.RTCTrackEvent, "track", "get")
+  // Everything the recorder needs. If any of it is missing, starting reports an error instead.
+  const canRecord = Boolean(NativeMediaRecorder && isTypeSupported && R.start && R.stop && R.pause && R.resume && R.state &&
+    blobDataOf && blobSize && NativeFileReader && readAsArrayBuffer && readerResult && NativeAudioContext &&
+    A.source && A.dest && A.constant && A.gain && A.resume && A.close && A.time && A.state && A.connect && A.disconnect &&
+    A.offset && A.startSource && A.gainParam && A.stream && A.setValue && A.setValueAtTime && A.setTargetAtTime && A.cancel &&
+    NativeMediaStream && streamAddTrack && trackKind && trackState)
 
   // --- private channel (see src/content/bridge.js)
   let port = null
@@ -48,84 +128,94 @@
     if (port) apply(dispatch, port, [new NativeCustomEvent(TO_EXT, { __proto__: null, detail: msg })])
   }
   function onHandshake(ev) {
-    apply(removeListener, window, [HANDSHAKE, onHandshake, true])
+    unlisten(window, HANDSHAKE, onHandshake, true)
     const node = apply(relatedTargetOf, ev, [])
     // Fail closed: the genuine handshake comes at document_start, before the page has any
     // <script>. One arriving later could only come from page code.
     if (port || !node || apply(scriptsOf, document, []).length) return
     port = node
-    apply(addListener, port, [TO_PAGE, (e) => {
+    listen(port, TO_PAGE, (e) => {
       const m = apply(detailOf, e, [])
       if (m && typeof m === "object") handle(m)
-    }])
+    })
   }
-  apply(addListener, window, [HANDSHAKE, onHandshake, true])
+  listen(window, HANDSHAKE, onHandshake, true)
 
-  const remote = new Map() // track -> its "ended" listener
-  const mic = new Map()
-  const peers = new Set()
-  let rec = null // { id, ctx, dest, micGain, micLevel, recorder, sources: Map<track, node>, includeMic, seq, mime, paused, cleanup: [] }
+  const remote = new NativeMap() // track -> its "ended" listener
+  const mic = new NativeMap()
+  const peers = new NativeSet()
+  let rec = null // { id, ctx, dest, micGain, micLevel, recorder, sources: Map<track, node>, includeMic, seq, mime, paused, unkick, queue... }
   let micOn = false // follows the call app's own mute button; closed until the content script says unmuted
 
+  const kindOf = (t) => { try { return call(trackKind, t) } catch { return "" } }
+  const stateOf = (t) => { try { return call(trackState, t) } catch { return "ended" } }
+
   function attach(track) {
-    if (!rec || rec.sources.has(track) || track.readyState === "ended") return
-    if (mic.has(track) && !rec.includeMic) return
+    if (!rec || call(map.has, rec.sources, track) || stateOf(track) === "ended") return
+    const isMic = call(map.has, mic, track)
+    if (isMic && !rec.includeMic) return
     try {
-      const node = rec.ctx.createMediaStreamSource(new NativeMediaStream([track]))
-      node.connect(mic.has(track) ? rec.micGain : rec.dest)
-      rec.sources.set(track, node)
+      const stream = new NativeMediaStream()
+      call(streamAddTrack, stream, track)
+      const node = call(A.source, rec.ctx, stream)
+      call(A.connect, node, isMic ? rec.micGain : rec.dest)
+      call(map.set, rec.sources, track, node)
     } catch (e) {
-      post({ type: "log", id: rec.id, message: "attach failed: " + e.message })
+      post({ type: "log", id: rec.id, message: "attach failed: " + String(e && e.name) })
     }
   }
 
   function detach(track) {
-    const node = rec && rec.sources.get(track)
+    const node = rec && call(map.get, rec.sources, track)
     if (node) {
-      try { node.disconnect() } catch {}
-      rec.sources.delete(track)
+      try { call(A.disconnect, node) } catch {}
+      call(map.delete, rec.sources, track)
     }
   }
 
-  function forget(track, set) {
-    const onEnded = set.get(track)
+  function forget(track, from) {
+    const onEnded = call(map.get, from, track)
     if (!onEnded) return
-    set.delete(track)
-    try { track.removeEventListener("ended", onEnded) } catch {}
+    call(map.delete, from, track)
+    try { unlisten(track, "ended", onEnded) } catch {}
     detach(track)
   }
 
-  function addTrack(track, set) {
-    if (!track || track.kind !== "audio" || set.has(track) || track.readyState === "ended") return
-    const onEnded = () => forget(track, set)
-    set.set(track, onEnded)
-    track.addEventListener("ended", onEnded, { once: true })
+  function addTrack(track, to) {
+    if (!track || kindOf(track) !== "audio" || call(map.has, to, track) || stateOf(track) === "ended") return
+    const onEnded = (ev) => { if (trusted(ev)) forget(track, to) }
+    call(map.set, to, track, onEnded)
+    try { listen(track, "ended", onEnded) } catch {}
     attach(track)
   }
 
   // A local pc.close() or track.stop() fires no event: drop them by their state.
   function prune() {
-    for (const pc of peers) {
-      if (pc.connectionState === "closed" || pc.signalingState === "closed") peers.delete(pc)
-    }
-    for (const set of [remote, mic]) {
-      for (const track of [...set.keys()]) if (track.readyState === "ended") forget(track, set)
-    }
+    call(set.forEach, peers, (pc) => {
+      let closed = true
+      try { closed = call(pcConnState, pc) === "closed" || call(pcSigState, pc) === "closed" } catch {}
+      if (closed) call(set.delete, peers, pc)
+    })
+    call(map.forEach, remote, (_, track) => { if (stateOf(track) === "ended") forget(track, remote) })
+    call(map.forEach, mic, (_, track) => { if (stateOf(track) === "ended") forget(track, mic) })
   }
 
   // --- capture remote tracks from every peer connection the app creates
-  const NativePC = window.RTCPeerConnection
   if (NativePC) {
     const watch = (pc) => {
-      peers.add(pc)
-      pc.addEventListener("track", (ev) => addTrack(ev.track, remote))
-      pc.addEventListener("connectionstatechange", () => {
-        if (pc.connectionState === "closed") peers.delete(pc)
+      call(set.add, peers, pc)
+      listen(pc, "track", (ev) => {
+        if (!trusted(ev) || !trackEventTrack) return
+        addTrack(call(trackEventTrack, ev), remote)
+      })
+      listen(pc, "connectionstatechange", (ev) => {
+        if (trusted(ev) && call(pcConnState, pc) === "closed") call(set.delete, peers, pc)
       })
     }
     const Wrapped = new Proxy(NativePC, {
+      __proto__: null, // no traps inherited from a patched Object.prototype
       construct(target, args, newTarget) {
-        const pc = Reflect.construct(target, args, newTarget)
+        const pc = construct(target, args, newTarget)
         try { watch(pc) } catch {}
         return pc
       },
@@ -136,26 +226,38 @@
 
   // --- capture the microphone the app opens
   const md = navigator.mediaDevices
-  if (md && md.getUserMedia) {
-    const nativeGUM = md.getUserMedia.bind(md)
-    md.getUserMedia = async function (constraints) {
-      const stream = await nativeGUM(constraints)
-      try { stream.getAudioTracks().forEach((t) => addTrack(t, mic)) } catch {}
+  const nativeGUM = md && md.getUserMedia
+  if (nativeGUM) {
+    const onStream = (stream) => {
+      try {
+        const tracks = call(streamAudioTracks, stream)
+        for (let i = 0; i < tracks.length; i++) addTrack(tracks[i], mic)
+      } catch {}
       return stream
+    }
+    md.getUserMedia = function (constraints) {
+      const p = call(nativeGUM, md, constraints)
+      try { settle(call(promiseThen, p, onStream)) } catch {}
+      return p
     }
   }
 
   function sweepPeers() {
-    for (const pc of peers) {
+    if (!pcReceivers || !receiverTrack) return
+    call(set.forEach, peers, (pc) => {
       try {
-        for (const r of pc.getReceivers()) if (r.track && r.track.readyState === "live") addTrack(r.track, remote)
+        const rs = call(pcReceivers, pc)
+        for (let i = 0; i < rs.length; i++) {
+          const t = call(receiverTrack, rs[i])
+          if (t && stateOf(t) === "live") addTrack(t, remote)
+        }
       } catch {}
-    }
+    })
   }
 
   function attachAll() {
-    remote.forEach((_, t) => attach(t))
-    mic.forEach((_, t) => attach(t))
+    call(map.forEach, remote, (_, t) => attach(t))
+    call(map.forEach, mic, (_, t) => attach(t))
   }
 
   // Mic gain follows the gate. Closing is immediate; opening ramps in over ~20 ms.
@@ -164,126 +266,180 @@
     const level = micOn && rec.includeMic ? 1 : 0
     if (rec.micLevel === level) return
     rec.micLevel = level
-    const g = rec.micGain.gain
+    const g = rec.micParam
     try {
-      const t = rec.ctx.currentTime
-      if (g.cancelScheduledValues) g.cancelScheduledValues(t)
-      if (level) g.setTargetAtTime(1, t, 0.02)
-      else g.setValueAtTime(0, t)
+      const t = call(A.time, rec.ctx)
+      call(A.cancel, g, t)
+      if (level) call(A.setTargetAtTime, g, 1, t, 0.02)
+      else call(A.setValueAtTime, g, 0, t)
     } catch {
-      g.value = level
+      try { call(A.setValue, g, level) } catch {}
     }
   }
 
   function teardown(state) {
-    for (const fn of state.cleanup.splice(0)) {
-      try { fn() } catch {}
+    if (state.unkick) {
+      try { state.unkick() } catch {}
+      state.unkick = null
     }
-    state.sources.forEach((n) => { try { n.disconnect() } catch {} })
-    state.sources.clear()
-    if (state.ctx) state.ctx.close().catch(() => {})
+    call(map.forEach, state.sources, (n) => { try { call(A.disconnect, n) } catch {} })
+    call(map.clear, state.sources)
+    if (state.ctx) {
+      try { settle(call(A.close, state.ctx)) } catch {}
+    }
+  }
+
+  // Chunks are read and posted strictly in order, 'stopped' after the last one. A FileReader of
+  // our own (captured methods, trusted events only) reads each Blob: no promise chain that a
+  // patched Promise.prototype could observe or stall.
+  function enqueue(state, item) {
+    call(map.set, state.queue, state.tail++, item)
+    pump(state)
+  }
+  function pump(state) {
+    while (!state.busy && call(map.has, state.queue, state.head)) {
+      const item = call(map.get, state.queue, state.head)
+      call(map.delete, state.queue, state.head++)
+      if (item.stop) {
+        post({ type: "stopped", id: state.id })
+        continue
+      }
+      let reader
+      try {
+        reader = new NativeFileReader()
+      } catch {
+        continue
+      }
+      let done = false
+      const finish = (ev, ok) => {
+        if (done || !trusted(ev)) return
+        done = true
+        state.busy = false
+        if (ok) {
+          let buf = null
+          try { buf = call(readerResult, reader) } catch {}
+          if (buf) post({ type: "chunk", id: state.id, seq: item.seq, mime: state.mime, buf })
+        }
+        pump(state)
+      }
+      listen(reader, "load", (ev) => finish(ev, true))
+      listen(reader, "error", (ev) => finish(ev, false))
+      listen(reader, "abort", (ev) => finish(ev, false))
+      state.busy = true
+      try {
+        call(readAsArrayBuffer, reader, item.blob)
+      } catch {
+        state.busy = false
+      }
+    }
   }
 
   function start(id, includeMic) {
     if (rec && rec.id === id) return
     if (rec) stop(rec.id)
     prune()
-    const state = { id, ctx: null, dest: null, micGain: null, micLevel: -1, recorder: null, sources: new Map(), includeMic, seq: 0, mime: "", paused: false, cleanup: [] }
+    const state = {
+      __proto__: null, id, ctx: null, dest: null, micGain: null, micParam: null, micLevel: -1, recorder: null,
+      sources: new NativeMap(), includeMic, seq: 0, mime: "", paused: false, unkick: null,
+      queue: new NativeMap(), head: 0, tail: 0, busy: false,
+    }
     try {
-      const ctx = (state.ctx = new NativeAudioContext({ sampleRate: 48000 }))
+      if (!canRecord) throw new Error("audio recording is not available in this browser")
+      const ctx = (state.ctx = new NativeAudioContext({ __proto__: null, sampleRate: 48000 }))
       // Autoplay policy can leave the graph suspended until the user interacts with the page.
-      if (ctx.state !== "running") {
+      if (call(A.state, ctx) !== "running") {
+        const resumed = () => { if (call(A.state, ctx) === "running") unkick() }
         const kick = () => {
-          ctx.resume().then(() => { if (ctx.state === "running") unkick() }, () => {})
+          try { call(promiseThen, call(A.resume, ctx), resumed, noop) } catch {}
         }
         const unkick = () => {
-          document.removeEventListener("pointerdown", kick, true)
-          document.removeEventListener("keydown", kick, true)
+          unlisten(document, "pointerdown", kick, true)
+          unlisten(document, "keydown", kick, true)
         }
-        document.addEventListener("pointerdown", kick, true)
-        document.addEventListener("keydown", kick, true)
-        state.cleanup.push(unkick)
-        ctx.resume().catch(() => {})
+        listen(document, "pointerdown", kick, true)
+        listen(document, "keydown", kick, true)
+        state.unkick = unkick
+        try { settle(call(A.resume, ctx)) } catch {}
       }
-      state.dest = ctx.createMediaStreamDestination()
+      state.dest = call(A.dest, ctx)
       // A silent constant keeps the recording continuous even before anyone speaks.
-      const keepAlive = ctx.createConstantSource()
-      keepAlive.offset.value = 0
-      keepAlive.connect(state.dest)
-      keepAlive.start()
-      state.micGain = ctx.createGain()
-      state.micGain.gain.value = 0
-      state.micGain.connect(state.dest)
-      state.mime = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"].find((m) => apply(isTypeSupported, NativeMediaRecorder, [m]))
-      state.recorder = new NativeMediaRecorder(state.dest.stream, { mimeType: state.mime, audioBitsPerSecond: 48000 })
+      const keepAlive = call(A.constant, ctx)
+      call(A.setValue, call(A.offset, keepAlive), 0)
+      call(A.connect, keepAlive, state.dest)
+      call(A.startSource, keepAlive)
+      state.micGain = call(A.gain, ctx)
+      state.micParam = call(A.gainParam, state.micGain)
+      call(A.setValue, state.micParam, 0)
+      call(A.connect, state.micGain, state.dest)
+      const mimes = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus"]
+      for (let i = 0; i < mimes.length && !state.mime; i++) if (call(isTypeSupported, NativeMediaRecorder, mimes[i])) state.mime = mimes[i]
+      state.recorder = new NativeMediaRecorder(call(A.stream, state.dest), { __proto__: null, mimeType: state.mime, audioBitsPerSecond: 48000 })
     } catch (e) {
       teardown(state)
       post({ type: "error", id, message: String((e && e.message) || e) })
       return
     }
-    const { recorder, mime } = state
-    let queue = Promise.resolve() // keeps chunks in order and 'stopped' after the last one
-    apply(addListener, recorder, ["dataavailable", (ev) => {
-      const blob = blobDataOf ? apply(blobDataOf, ev, []) : ev.data
-      if (!blob || !blob.size) return
-      const seq = state.seq++
-      queue = queue.then(async () => {
-        const buf = await apply(blobArrayBuffer, blob, [])
-        post({ type: "chunk", id, seq, mime, buf })
-      }).catch(() => {})
-    }])
-    apply(addListener, recorder, ["stop", () => {
-      queue = queue.then(() => post({ type: "stopped", id }))
-    }])
+    const recorder = state.recorder
+    listen(recorder, "dataavailable", (ev) => {
+      if (!trusted(ev)) return
+      const blob = call(blobDataOf, ev)
+      if (!blob || !call(blobSize, blob)) return
+      enqueue(state, { __proto__: null, blob, seq: state.seq++, stop: false })
+    })
+    listen(recorder, "stop", (ev) => {
+      if (trusted(ev)) enqueue(state, { __proto__: null, blob: null, seq: -1, stop: true })
+    })
     rec = state
     setMicLevel()
     sweepPeers()
     attachAll()
     try {
-      recorder.start(CHUNK_MS)
+      call(R.start, recorder, CHUNK_MS)
     } catch (e) {
       rec = null
       teardown(state)
       post({ type: "error", id, message: String((e && e.message) || e) })
       return
     }
-    post({ type: "started", id, mime, remote: remote.size, mic: mic.size, state: state.ctx.state })
+    post({ type: "started", id, mime: state.mime, remote: call(map.size, remote), mic: call(map.size, mic), state: call(A.state, state.ctx) })
   }
 
   function stop(id) {
     if (!rec || rec.id !== id) return post({ type: "stopped", id })
     const r = rec
     rec = null
-    for (const fn of r.cleanup.splice(0)) {
-      try { fn() } catch {}
+    if (r.unkick) {
+      try { r.unkick() } catch {}
+      r.unkick = null
     }
     try {
-      if (r.recorder.state !== "inactive") r.recorder.stop()
-      else post({ type: "stopped", id })
+      if (call(R.state, r.recorder) !== "inactive") call(R.stop, r.recorder)
+      else enqueue(r, { __proto__: null, blob: null, seq: -1, stop: true })
     } catch {
-      post({ type: "stopped", id })
+      enqueue(r, { __proto__: null, blob: null, seq: -1, stop: true })
     }
     // Let the final dataavailable fire before closing the graph.
-    setTimeout(() => teardown(r), 1000)
+    later(() => teardown(r), 1000)
   }
 
   function pause(id, on) {
     if (!rec || rec.id !== id) return
     try {
-      if (on && rec.recorder.state === "recording") rec.recorder.pause()
-      else if (!on && rec.recorder.state === "paused") rec.recorder.resume()
+      const st = call(R.state, rec.recorder)
+      if (on && st === "recording") call(R.pause, rec.recorder)
+      else if (!on && st === "paused") call(R.resume, rec.recorder)
       rec.paused = on
       post({ type: on ? "paused" : "resumed", id })
     } catch (e) {
-      post({ type: "log", id, message: "pause/resume failed: " + e.message })
+      post({ type: "log", id, message: "pause/resume failed: " + String(e && e.name) })
     }
   }
 
   function configure(id, includeMic) {
     if (!rec || rec.id !== id) return
     rec.includeMic = includeMic
-    if (includeMic) mic.forEach((_, t) => attach(t))
-    else mic.forEach((_, t) => detach(t))
+    if (includeMic) call(map.forEach, mic, (_, t) => attach(t))
+    else call(map.forEach, mic, (_, t) => detach(t))
     setMicLevel()
   }
 
@@ -303,15 +459,15 @@
       setMicLevel()
     } else if (type === "status") {
       post({
-        type: "status", recording: Boolean(rec), id: rec ? rec.id : null, paused: Boolean(rec && rec.paused), state: rec ? rec.ctx.state : null,
-        remote: remote.size, mic: mic.size, peers: peers.size, sources: rec ? rec.sources.size : 0,
+        type: "status", recording: Boolean(rec), id: rec ? rec.id : null, paused: Boolean(rec && rec.paused), state: rec ? call(A.state, rec.ctx) : null,
+        remote: call(map.size, remote), mic: call(map.size, mic), peers: call(set.size, peers), sources: rec ? call(map.size, rec.sources) : 0,
         micOn, includeMic: rec ? rec.includeMic : null, micGain: rec ? rec.micLevel : null,
       })
     }
   }
 
   // Tracks that appear mid-call (new participants, mic switches); drop closed ones.
-  setInterval(() => {
+  call(setRepeat, window, () => {
     prune()
     if (rec) {
       sweepPeers()

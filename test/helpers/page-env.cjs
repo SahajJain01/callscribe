@@ -13,6 +13,14 @@ const HANDSHAKE = "__callscribe_bridge"
 const TO_PAGE = "__callscribe_to_page"
 const TO_EXT = "__callscribe_to_ext"
 
+// Events the fake browser fires carry this (module-private) mark; everything a test (playing
+// the page) constructs and dispatches itself is untrusted, as in Chrome.
+const TRUSTED = Symbol("trusted")
+const blobArrayBuffer = Blob.prototype.arrayBuffer // the fake FileReader's own (native) reader
+class FakeEvent extends Event {
+  get isTrusted() { return this[TRUSTED] === true }
+}
+
 class MouseEvent extends Event {
   constructor(type, init = {}) {
     super(type, init)
@@ -23,7 +31,7 @@ class MouseEvent extends Event {
   }
 }
 
-class BlobEvent extends Event {
+class BlobEvent extends FakeEvent {
   constructor(type, init = {}) {
     super(type, init)
     this._data = init.data
@@ -68,77 +76,131 @@ function createPage(opts = {}) {
     for (const [, cb] of due) cb(now)
   }
 
-  // --- media
+  // --- media. Like Chrome, methods and accessors live on the prototypes (so a test can patch
+  // them the way a page script would), and only events the "browser" fires are trusted.
   const contexts = []
   const recorders = []
+  const fire = (target, ev) => { ev[TRUSTED] = true; return target.dispatchEvent(ev) }
   class Track extends EventTarget {
     constructor(kind = "audio") {
       super()
-      this.kind = kind
-      this.readyState = "live"
+      this._kind = kind
+      this._state = "live"
       this.listeners = 0
     }
+    get kind() { return this._kind }
+    get readyState() { return this._state }
     addEventListener(type, fn, o) { if (type === "ended") this.listeners++; return super.addEventListener(type, fn, o) }
     removeEventListener(type, fn, o) { if (type === "ended") this.listeners--; return super.removeEventListener(type, fn, o) }
-    stop() { this.readyState = "ended" } // like Chrome: a local stop() fires no "ended" event
+    stop() { this._state = "ended" } // like Chrome: a local stop() fires no "ended" event
+    end() { this._state = "ended"; fire(this, new FakeEvent("ended")) } // the remote side went away
+  }
+  class RTCRtpReceiver {
+    constructor(track) { this._track = track }
+    get track() { return this._track }
+  }
+  class RTCTrackEvent extends FakeEvent {
+    constructor(type, init = {}) { super(type, init); this._track = init.track }
+    get track() { return this._track }
+  }
+  class MessageEvent extends FakeEvent {
+    constructor(type, init = {}) { super(type, init); this._data = init.data }
+    get data() { return this._data }
+  }
+  class RTCDataChannelEvent extends FakeEvent {
+    constructor(type, init = {}) { super(type, init); this._channel = init.channel }
+    get channel() { return this._channel }
+  }
+  class RTCDataChannel extends EventTarget {
+    constructor(label) {
+      super()
+      this._label = label
+      this._state = "open"
+      this.sent = []
+    }
+    get label() { return this._label }
+    get readyState() { return this._state }
+    send(d) { this.sent.push(d) }
   }
   class PeerConnection extends EventTarget {
     constructor() {
       super()
-      this.connectionState = "new"
-      this.signalingState = "stable"
+      this._conn = "new"
+      this._sig = "stable"
       this.receivers = []
       this.channels = []
     }
-    getReceivers() { return this.receivers }
+    get connectionState() { return this._conn }
+    get signalingState() { return this._sig }
+    getReceivers() { return this.receivers.slice() }
     addRemoteTrack(track) {
-      this.receivers.push({ track })
-      const ev = new Event("track")
-      ev.track = track
-      this.dispatchEvent(ev)
+      this.receivers.push(new RTCRtpReceiver(track))
+      fire(this, new RTCTrackEvent("track", { track }))
     }
-    close() { this.connectionState = "closed"; this.signalingState = "closed" } // no event, like Chrome
+    close() { this._conn = "closed"; this._sig = "closed" } // no event, like Chrome
     createDataChannel(label) {
-      const ch = new EventTarget()
-      ch.label = label
-      ch.readyState = "open"
-      ch.sent = []
-      ch.send = (d) => ch.sent.push(d)
+      const ch = new RTCDataChannel(label)
       this.channels.push(ch)
       return ch
     }
+    remoteChannel(label) { // a channel the other side opened
+      const ch = new RTCDataChannel(label)
+      fire(this, new RTCDataChannelEvent("datachannel", { channel: ch }))
+      return ch
+    }
+  }
+  class AudioParam {
+    constructor(v) { this._v = v }
+    get value() { return this._v }
+    set value(v) { this._v = v }
+    setValueAtTime(v) { this._v = v }
+    setTargetAtTime(v) { this._v = v }
+    cancelScheduledValues() {}
   }
   class AudioNode {
-    constructor(ctx) { this.ctx = ctx; this.out = new Set(); this.disconnected = false }
-    connect(n) { this.out.add(n) }
-    disconnect() { this.out.clear(); this.disconnected = true }
+    constructor(ctx) { this.ctx = ctx; this.out = []; this.disconnected = false }
+    connect(n) { this.out.push(n); return n }
+    disconnect() { this.out = []; this.disconnected = true }
   }
+  class GainNode extends AudioNode {
+    constructor(ctx) { super(ctx); this._gain = new AudioParam(1) }
+    get gain() { return this._gain }
+  }
+  class ConstantSourceNode extends AudioNode {
+    constructor(ctx) { super(ctx); this._offset = new AudioParam(1); this.started = false }
+    get offset() { return this._offset }
+    start() { this.started = true }
+  }
+  class MediaStreamAudioDestinationNode extends AudioNode {
+    constructor(ctx) { super(ctx); this._stream = new MediaStream() }
+    get stream() { return this._stream }
+  }
+  class MediaStreamAudioSourceNode extends AudioNode {}
   class AudioContext {
     constructor() {
-      this.state = opts.ctxState || "running"
-      this.currentTime = 0
+      this._state = opts.ctxState || "running"
       this.closed = false
       this.sources = []
+      this.gains = []
       this.resumeCalls = 0
       contexts.push(this)
     }
-    createMediaStreamDestination() { const n = new AudioNode(this); n.stream = { id: "mix" }; return n }
-    createConstantSource() { const n = new AudioNode(this); n.offset = { value: 1 }; n.start = () => {}; return n }
-    createGain() {
-      const n = new AudioNode(this)
-      n.gain = { value: 1, setTargetAtTime(v) { this.value = v }, setValueAtTime(v) { this.value = v } }
-      return n
-    }
-    createMediaStreamSource(stream) { const n = new AudioNode(this); n.track = stream.tracks[0]; this.sources.push(n); return n }
+    get state() { return this._state }
+    get currentTime() { return 0 }
+    createMediaStreamDestination() { return (this.dest = new MediaStreamAudioDestinationNode(this)) }
+    createConstantSource() { return new ConstantSourceNode(this) }
+    createGain() { const n = new GainNode(this); this.gains.push(n); return n }
+    createMediaStreamSource(stream) { const n = new MediaStreamAudioSourceNode(this); n.track = stream.tracks[0]; this.sources.push(n); return n }
     resume() {
       this.resumeCalls++
       if (opts.resumeRejects) return Promise.reject(new Error("resume refused"))
       return Promise.resolve()
     }
-    close() { this.closed = true; this.state = "closed"; return Promise.resolve() }
+    close() { this.closed = true; this._state = "closed"; return Promise.resolve() }
   }
   class MediaStream {
-    constructor(tracks) { this.tracks = tracks || [] }
+    constructor(tracks) { this.tracks = tracks ? [...tracks] : [] }
+    addTrack(t) { this.tracks.push(t) }
     getAudioTracks() { return this.tracks.filter((t) => t.kind === "audio") }
   }
   class MediaRecorder extends EventTarget {
@@ -147,20 +209,29 @@ function createPage(opts = {}) {
       super()
       this.stream = stream
       this.mimeType = o && o.mimeType
-      this.state = "inactive"
+      this._state = "inactive"
       recorders.push(this)
     }
     static isTypeSupported(m) { return m === "audio/webm;codecs=opus" }
-    start(ms) { this.state = "recording"; this.timeslice = ms }
-    pause() { if (this.state === "recording") this.state = "paused" }
-    resume() { if (this.state === "paused") this.state = "recording" }
+    get state() { return this._state }
+    start(ms) { this._state = "recording"; this.timeslice = ms }
+    pause() { if (this._state === "recording") this._state = "paused" }
+    resume() { if (this._state === "paused") this._state = "recording" }
     stop() {
-      if (this.state === "inactive") return
-      this.state = "inactive"
+      if (this._state === "inactive") return
+      this._state = "inactive"
       this.emit(new Uint8Array([9, 9]))
-      queueMicrotask(() => this.dispatchEvent(new Event("stop")))
+      queueMicrotask(() => fire(this, new FakeEvent("stop")))
     }
-    emit(bytes) { this.dispatchEvent(new BlobEvent("dataavailable", { data: new Blob([bytes]) })) }
+    emit(bytes) { fire(this, new BlobEvent("dataavailable", { data: new Blob([bytes], { type: "audio/webm" }) })) }
+  }
+  class FileReader extends EventTarget {
+    constructor() { super(); this._result = null }
+    get result() { return this._result }
+    readAsArrayBuffer(blob) {
+      if (!(blob instanceof Blob)) throw new TypeError("not a Blob")
+      blobArrayBuffer.call(blob).then((buf) => { this._result = buf; fire(this, new FakeEvent("load")) })
+    }
   }
 
   // --- window / document
@@ -192,8 +263,10 @@ function createPage(opts = {}) {
     window: win, document: doc, navigator, location: { origin: "https://app.slack.com", hostname: "app.slack.com" },
     setTimeout, clearTimeout, setInterval, clearInterval, queueMicrotask, performance: { now: () => now },
     requestAnimationFrame: nativeRAF, cancelAnimationFrame: nativeCancel,
-    Document, RTCPeerConnection: PeerConnection, AudioContext, MediaStream, MediaRecorder, Blob, BlobEvent,
-    Event, EventTarget, CustomEvent, MouseEvent, Promise, Reflect, Object, Map, Set, WeakMap, WeakSet, Array, ArrayBuffer,
+    Document, RTCPeerConnection: PeerConnection, RTCRtpReceiver, RTCTrackEvent, RTCDataChannel, RTCDataChannelEvent, MessageEvent,
+    AudioContext, AudioNode, AudioParam, GainNode, ConstantSourceNode, MediaStreamAudioDestinationNode, MediaStreamAudioSourceNode,
+    MediaStream, MediaStreamTrack: Track, MediaRecorder, FileReader, Blob, BlobEvent,
+    Event, EventTarget, CustomEvent, MouseEvent, Promise, Reflect, Object, Map, Set, WeakMap, WeakSet, Array, ArrayBuffer, DataView,
     Uint8Array, Number, String, Boolean, Error, Date, Math, JSON, console,
   })
   vm.createContext(win)
@@ -220,7 +293,7 @@ function createPage(opts = {}) {
 
   return {
     win, doc, load, connect, toPage, fromPage, posted, advance, frame, flush, rafs, timers, contexts, recorders, gumTracks,
-    Track, PeerConnection, MouseEvent, HANDSHAKE, TO_PAGE, TO_EXT,
+    Track, PeerConnection, MouseEvent, MessageEvent, BlobEvent, FakeEvent, fire, HANDSHAKE, TO_PAGE, TO_EXT,
     get now() { return now },
   }
 }

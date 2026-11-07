@@ -7,8 +7,13 @@ import fs from "node:fs"
 import https from "node:https"
 import os from "node:os"
 import path from "node:path"
+import { attackerObjectChecks } from "./attacker-checks.mjs"
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../..")
+// CALLSCRIBE_EXT=<dir>: load the extension from another checkout (e.g. an older commit, to show
+// the attacker's checks catch a vulnerable build). The tests and fixtures always come from here.
+const ext = process.env.CALLSCRIBE_EXT ? path.resolve(process.env.CALLSCRIBE_EXT) : root
+if (ext !== root) console.log("extension loaded from", ext)
 const chrome = process.env.CHROME || path.join(os.homedir(), ".hermes/tools/chromium-1208/chrome-linux64/chrome")
 const work = fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(), "callscribe-e2e-"))
 const downloads = path.join(work, "downloads")
@@ -18,7 +23,8 @@ execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days
   "-keyout", path.join(work, "key.pem"), "-out", path.join(work, "cert.pem")], { stdio: "ignore" })
 // The fixture's first <head> script is a hostile page script (attacker.js): it tries to get at
 // CallScribe's private page<->extension channel and forges every kind of message on it.
-const attacker = fs.readFileSync(path.join(root, "test/e2e/attacker.js"), "utf8")
+const attacker = (process.env.ATTACK_ROUTES ? `window.__atkRoutes = ${JSON.stringify(process.env.ATTACK_ROUTES)};\n` : "") +
+  fs.readFileSync(path.join(root, "test/e2e/attacker.js"), "utf8")
 const fixture = fs.readFileSync(path.join(root, "test/e2e/slack-fixture.html"), "utf8").replace("<!--ATTACKER-->", () => `<script>${attacker}</script>`)
 const server = https.createServer({ key: fs.readFileSync(path.join(work, "key.pem")), cert: fs.readFileSync(path.join(work, "cert.pem")) },
   (req, res) => { res.writeHead(200, { "content-type": "text/html; charset=utf-8" }); res.end(fixture) })
@@ -33,7 +39,7 @@ fs.writeFileSync(path.join(work, "profile/Default/Preferences"), JSON.stringify(
 
 const proc = spawn(chrome, [
   "--headless=new", `--user-data-dir=${path.join(work, "profile")}`, "--no-first-run", "--no-default-browser-check",
-  `--disable-extensions-except=${root}`, `--load-extension=${root}`,
+  `--disable-extensions-except=${ext}`, `--load-extension=${ext}`,
   `--host-resolver-rules=MAP app.slack.com 127.0.0.1:${port}`, "--ignore-certificate-errors",
   "--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream", "--autoplay-policy=no-user-gesture-required",
   "--remote-debugging-port=0", "about:blank",
@@ -243,6 +249,7 @@ check(atk && atk.forged > 3, "attacker forged messages repeatedly during the cal
 check(atk && atk.ports === 0 && atk.nodes === 0 && atk.nodeEvents === 0, "attacker could not obtain the private channel (no port, no endpoint, its own endpoint got nothing)")
 check(atk && atk.audioBytes === 0 && atk.messages === 0 && atk.detailReads === 0 && atk.protoHits === 0 && atk.blobReads === 0, "attacker read no CallScribe traffic or audio")
 check(atk && atk.sessionIds.length === 0, "attacker saw no session id")
+attackerObjectChecks(atk, check)
 if (attack) {
   check(attack.later > attack.chunksAt, `recording kept going after forged stops (chunks ${attack.chunksAt} -> ${attack.later})`)
   const rows = await chunkRows(attack.id)
