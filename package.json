@@ -1,6 +1,6 @@
 {
   "name": "callscribe",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Chrome extension: Google Meet / Slack huddle caption transcripts plus an audio backup, stored locally.",
   "license": "MIT",
