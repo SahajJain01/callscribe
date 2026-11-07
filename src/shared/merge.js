@@ -4,63 +4,203 @@
   "use strict"
 
   const norm = (s) => String(s || "").replace(/\s+/g, " ").trim()
-  const key = (w) => w.toLowerCase().replace(/[^\p{L}\p{N}']+/gu, "")
-  const words = (s) => norm(s).split(" ").filter(Boolean)
+  // Scripts written without spaces between words: each character (with its marks) is a token.
+  const NO_SPACE = "\\p{scx=Han}\\p{scx=Hiragana}\\p{scx=Katakana}\\p{sc=Thai}\\p{sc=Lao}\\p{sc=Khmer}\\p{sc=Myanmar}"
+  const TOKEN = new RegExp(`[${NO_SPACE}]\\p{M}*|[^\\s${NO_SPACE}]+`, "gu")
+  const NO_SPACE_CHAR = new RegExp(`[${NO_SPACE}]`, "u")
+  const key = (w) => w.toLowerCase().replace(/[\u2018\u2019]/g, "'").replace(/[^\p{L}\p{M}\p{N}']+/gu, "")
+  // Letters and digits only: compares renderings that differ in spacing, punctuation, case, hyphens.
+  const ck = (s) => String(s || "").toLowerCase().replace(/[^\p{L}\p{M}\p{N}]+/gu, "")
+  // Tokens with a non-empty key, and where each starts in s (to cut s without re-joining tokens).
+  function toks(s) {
+    const out = []
+    for (const m of s.matchAll(TOKEN)) {
+      const k = key(m[0])
+      if (k) out.push({ k, i: m.index })
+    }
+    return out
+  }
+  const keys = (s) => toks(norm(s)).map((t) => t.k)
+  // Joining two pieces of text: no space between characters of scripts written without spaces.
+  const join = (a, b) => (NO_SPACE_CHAR.test(a.slice(-1)) || NO_SPACE_CHAR.test(b[0]) ? a + b : a + " " + b)
 
-  // How many of b's first n words line up with a starting at i (case/punctuation-insensitive).
+  // How many of b's first n tokens line up with a starting at i (case/punctuation-insensitive).
   function matchAt(a, i, b, n) {
     let hits = 0
     for (let j = 0; j < n; j++) if (i + j < a.length && a[i + j] === b[j]) hits++
     return hits
   }
 
+  // Smallest edit distance between a and any prefix of b (b may run on past a).
+  function prefixDistance(a, b) {
+    a = a.slice(0, 200)
+    b = b.slice(0, a.length * 2 + 20)
+    let row = Array.from({ length: b.length + 1 }, (_, j) => j)
+    for (let i = 1; i <= a.length; i++) {
+      const next = [i]
+      for (let j = 1; j <= b.length; j++) next[j] = Math.min(row[j] + 1, next[j - 1] + 1, row[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+      row = next
+    }
+    return Math.min(...row)
+  }
+
+  /**
+   * No anchor between prev and next. Is next still a re-rendering of the same speech (numbers
+   * written as digits, a filler or hyphen removed, the first word corrected)? A caption UI that
+   * reuses a row for a new sentence shares none of this with it.
+   */
+  function reRendered(pk, nk, pc, nc) {
+    // Mostly the same letters, allowing for a correction or two.
+    if (pc.length >= 3 && 1 - prefixDistance(pc, nc) / pc.length >= 0.6) return true
+    // The same opening letters (one word re-recognised: "I think" -> "I thought so").
+    let common = 0
+    while (common < pc.length && pc[common] === nc[common]) common++
+    if (common >= 3 && common >= pc.length * 0.4) return true
+    // prev's last two words appear early in next: the start was re-rendered, the rest carried on.
+    if (pk.length >= 2) {
+      const a = pk[pk.length - 2], b = pk[pk.length - 1]
+      for (let j = 0; j + 1 < Math.min(nk.length, pk.length + 4); j++) if (nk[j] === a && nk[j + 1] === b) return true
+    }
+    return false
+  }
+
   /**
    * Merge the latest rendering of a caption row into what we already hold for it.
    * Caption UIs grow a row as speech arrives, re-punctuate and fix earlier words as
    * recognition improves, and some trim the front of long rows. Find where the new
-   * rendering starts inside the old one (fuzzy, word-level) and splice it in there.
+   * rendering starts inside the old one (fuzzy, token-level) and splice it in there.
+   * Tokens are words, or single characters in scripts written without spaces (CJK, Thai).
    */
   function mergeText(prev, next) {
+    return mergeRow(prev, next).text
+  }
+
+  // { text, appended }: appended = next was taken as new speech after prev, not a re-rendering of it.
+  function mergeRow(prev, next) {
     prev = norm(prev)
     next = norm(next)
-    if (!prev) return next
-    if (!next || next === prev) return prev
+    if (!prev) return { text: next }
+    if (!next || next === prev) return { text: prev }
+    const pc = ck(prev), nc = ck(next)
+    // The row grew, or was re-punctuated/re-spaced: newest wins. A shorter rendering is stale.
+    if (nc.startsWith(pc)) return { text: next }
+    if (pc.startsWith(nc)) return { text: prev }
 
-    const pw = words(prev), nw = words(next)
-    const pk = pw.map(key), nk = nw.map(key)
+    const pt = toks(prev), nt = toks(next)
+    const pk = pt.map((t) => t.k), nk = nt.map((t) => t.k)
+    if (!pk.length || !nk.length) return { text: join(prev, next), appended: true }
     const n = Math.min(6, nk.length)
-    const need = n <= 2 ? n : n - 1 // allow one corrected word in the probe
+    const need = n <= 2 ? n : n - 1 // allow one corrected token in the probe
 
-    // A full re-rendering (same start, similar or greater length): newest wins.
+    // A full re-rendering (same start, similar or greater length): newest wins. When next is
+    // shorter it must line up with prev all along, or it would drop prev's later text.
     const m0 = Math.min(n, pk.length)
-    if (matchAt(pk, 0, nk, m0) >= (m0 <= 2 ? m0 : m0 - 1) && nk.length >= pk.length * 0.6) return next
+    if (matchAt(pk, 0, nk, m0) >= (m0 <= 2 ? m0 : m0 - 1) && nk.length >= pk.length * 0.6) {
+      if (nk.length >= pk.length || matchAt(pk, 0, nk, nk.length) >= nk.length - Math.max(1, Math.floor(nk.length / 5))) return { text: next }
+    }
 
     // Find where next begins inside prev; prefer the latest match (front-trimmed rows).
     let at = -1
-    for (let i = pk.length - 1; i >= 0; i--) {
+    for (let i = pk.length - 1; i >= 1; i--) {
       const w = Math.min(n, pk.length - i)
-      if (w < Math.min(3, n)) continue
+      if (w < Math.min(3, n)) {
+        // Only the last two words of prev are left to overlap: accept an exact two-word overlap.
+        if (w === 2 && n >= 2 && pk[i].length > 1 && pk[i + 1].length > 1 && matchAt(pk, i, nk, 2) === 2) {
+          at = i
+          break
+        }
+        continue
+      }
       // Near the end of prev only a short overlap is visible: require it exactly.
       if (matchAt(pk, i, nk, w) >= (w < n ? w : need)) {
         at = i
         break
       }
     }
-    if (at === 0 && nk.length < pk.length * 0.6) {
-      // Same start but much shorter: a stale or partial rendering.
-      return prev
-    }
     if (at > 0) {
       // Entirely inside prev already (stale fragment)?
       const covered = at + nk.length <= pk.length && matchAt(pk, at, nk, nk.length) >= nk.length - Math.floor(nk.length / 6)
-      if (covered) return prev
-      return pw.slice(0, at).concat(nw).join(" ")
+      if (covered) return { text: prev }
+      // A short row that lost its first word or two was re-rendered (a filler dropped); only
+      // long rows get front-trimmed.
+      if (at <= 2 && pk.length <= 6) return { text: next }
+      return { text: prev.slice(0, pt[at].i) + next }
     }
-    if (at === 0) return next
 
-    // No anchor at all: a genuinely different continuation.
-    if (key(prev).includes(key(next))) return prev
-    return prev + " " + next
+    // No anchor: a re-rendering, or a genuinely different continuation.
+    if (reRendered(pk, nk, pc, nc)) return { text: next }
+    if (pc.includes(nc)) return { text: prev }
+    return { text: join(prev, next), appended: true }
+  }
+
+  /**
+   * One transcript from Meet's caption feed and the captions read from the page. Each source
+   * may cover only part of the call (the feed starts late, or dies and CC takes over), so the
+   * export is the union. A page line is dropped when feed lines from the same time (within 3 s)
+   * and a compatible speaker already hold most (60%) of its words: the feed has better timing
+   * and speakers. When the page line holds more, it is kept, and feed lines it contains (90%)
+   * are dropped instead: the feed died mid-sentence. "Unknown…" and "You" match any speaker.
+   * Sorted by start; extra fields are kept.
+   */
+  const NEAR_MS = 3000
+  const anyone = (s) => !s || /^unknown/i.test(s) || s === "You"
+  const sameSpeaker = (a, b) => a.speaker === b.speaker || anyone(a.speaker) || anyone(b.speaker)
+  function share(part, whole) {
+    if (!part.length) return 1
+    const pool = new Map()
+    for (const k of whole) pool.set(k, (pool.get(k) || 0) + 1)
+    let hit = 0
+    for (const k of part) if (pool.get(k)) {
+      hit++
+      pool.set(k, pool.get(k) - 1)
+    }
+    return hit / part.length
+  }
+  // Token keys of a line, remembered: the same finished lines are compared on every save.
+  const keyCache = new Map()
+  function lineKeys(text) {
+    let k = keyCache.get(text)
+    if (!k) {
+      if (keyCache.size >= 8192) keyCache.clear()
+      k = keys(text)
+      keyCache.set(text, k)
+    }
+    return k
+  }
+  function mergeSources(feed, dom) {
+    feed = feed || []
+    dom = dom || []
+    if (!dom.length) return feed.slice()
+    if (!feed.length) return dom.slice()
+    // Feed lines by start, so each page line only looks at the few near it (long calls).
+    const fs = feed.slice().sort((x, y) => x.start - y.start)
+    const longest = fs.reduce((m, f) => Math.max(m, f.end - f.start), 0)
+    const dropped = new Set()
+    const kept = []
+    for (const d of dom) {
+      // Last feed line starting by d.end + NEAR_MS, then back while one could still end near d.
+      let lo = 0, hi = fs.length
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1
+        if (fs[mid].start <= d.end + NEAR_MS) lo = mid + 1
+        else hi = mid
+      }
+      const near = []
+      for (let i = lo - 1; i >= 0 && fs[i].start >= d.start - NEAR_MS - longest; i--) {
+        const f = fs[i]
+        if (f.end >= d.start - NEAR_MS && sameSpeaker(f, d)) near.push({ f, k: lineKeys(f.text) })
+      }
+      if (!near.length) {
+        kept.push(d)
+        continue
+      }
+      const dk = lineKeys(d.text)
+      if (share(dk, near.flatMap((x) => x.k)) >= 0.6) continue
+      kept.push(d)
+      for (const x of near) if (share(x.k, dk) >= 0.9) dropped.add(x.f)
+    }
+    // Array sort is stable: lines starting together keep feed-then-page order.
+    return feed.filter((f) => !dropped.has(f)).concat(kept).sort((a, b) => a.start - b.start)
   }
 
   /**
@@ -72,6 +212,19 @@
   const MIN_TURN_MS = 1000
   // A row that first shows up already this long was not seen while it was being spoken.
   const LONG_FIRST_SIGHT_WORDS = 12
+  // Roughly how many words: characters of scripts without spaces count as half a word each.
+  function wordCount(s) {
+    let n = 0
+    for (const t of toks(norm(s))) n += NO_SPACE_CHAR.test(t.k) ? 0.5 : 1
+    return n
+  }
+  // A row re-rendered in a fresh element is joined to the entry it continues within this long.
+  const REATTACH_MS = 15000
+  // A short line (a word or three) is only joined when it is that recent: "Yes." said again is new.
+  const REATTACH_SHORT_MS = 3000
+  const SHORT_TOKENS = 3
+  // Meet labels your own captions "You", and your name once it knows it.
+  const SELF = "You"
 
   class CaptionTracker {
     constructor(now = () => Date.now()) {
@@ -79,6 +232,8 @@
       this.startedAt = now() // lower bound for any backdated caption
       this.entries = []
       this.live = new Map()
+      this.selfName = ""
+      this.seen = new WeakMap() // entry -> { created, updated }: read times, never backdated
       this.dirty = false
     }
 
@@ -90,16 +245,25 @@
       for (const row of rows) {
         const text = norm(row.text)
         if (!text) continue
-        const speaker = norm(row.speaker) || "Unknown"
+        let speaker = norm(row.speaker) || "Unknown"
+        if (speaker === SELF && this.selfName) speaker = this.selfName
         let entry = this.live.get(row.key)
         if (entry && speaker !== "Unknown" && entry.speaker !== speaker && entry.speaker !== "Unknown") {
-          entry = undefined // the UI reused this row for someone else
+          // The UI reused this row for someone else, unless "You" just got your name and the
+          // row carries on the same speech.
+          const self = (entry.speaker === SELF) !== (speaker === SELF)
+          if (self && !mergeRow(entry.text, text).appended) {
+            if (speaker !== SELF) this._learnSelf(speaker)
+          } else {
+            entry = undefined
+          }
         }
         if (!entry) {
           entry = this._reattach(speaker, text, t)
           if (!entry) {
             entry = { speaker, text: "", start: t, end: t }
             this.entries.push(entry)
+            this.seen.set(entry, { created: t, updated: t })
           }
           this.live.set(row.key, entry)
         }
@@ -111,10 +275,18 @@
         if (merged !== entry.text) {
           entry.text = merged
           entry.end = t
+          this.seen.get(entry).updated = t
           this.dirty = true
         }
       }
       this._backdate(this.entries.slice(firstNew), t, firstNew)
+    }
+
+    // "You" is this name: relabel what was captured as "You" so far.
+    _learnSelf(name) {
+      this.selfName = name
+      for (const e of this.entries) if (e.speaker === SELF) e.speaker = name
+      this.dirty = true
     }
 
     /**
@@ -126,8 +298,8 @@
      */
     _backdate(fresh, t, firstNew) {
       if (!fresh.length) return
-      const len = (e) => Math.max(MIN_TURN_MS, words(e.text).length * MS_PER_WORD)
-      const isBatch = fresh.length >= 2 || words(fresh[0].text).length > LONG_FIRST_SIGHT_WORDS
+      const len = (e) => Math.max(MIN_TURN_MS, wordCount(e.text) * MS_PER_WORD)
+      const isBatch = fresh.length >= 2 || wordCount(fresh[0].text) > LONG_FIRST_SIGHT_WORDS
       if (!isBatch) return
       const prev = this.entries[firstNew - 1]
       const floor = Math.max(this.startedAt, prev ? prev.end : -Infinity)
@@ -148,17 +320,26 @@
       this.dirty = true
     }
 
-    // A row re-rendered in a fresh element continues a recent entry instead of duplicating it.
+    /**
+     * A row re-rendered in a fresh element continues a recent entry instead of duplicating it.
+     * Only an entry nobody else has spoken after (a row first read after its last update)
+     * qualifies, and a short line only when it is very recent: the same short answer said
+     * again ("Yes.", "OK.") is a new line.
+     */
     _reattach(speaker, text, t) {
       const live = new Set(this.live.values())
-      const tk = words(text).map(key)
+      const tk = keys(text)
+      const short = tk.length <= SHORT_TOKENS
       for (let i = this.entries.length - 1; i >= 0 && i >= this.entries.length - 6; i--) {
         const e = this.entries[i]
-        if (live.has(e) || e.speaker !== speaker || t - e.end > 15000) continue
-        const ek = words(e.text).map(key)
+        if (e.speaker !== speaker) continue
+        const updated = this.seen.get(e).updated
+        if (live.has(e) || t - updated > (short ? REATTACH_SHORT_MS : REATTACH_MS)) continue
+        if (this.entries.slice(i + 1).some((o) => o.speaker !== speaker && this.seen.get(o).created > updated)) break
+        const ek = keys(e.text)
         const n = Math.min(4, tk.length, ek.length)
         if (n && matchAt(ek, 0, tk, n) >= n - (n > 2 ? 1 : 0)) return e
-        if (key(e.text).includes(key(text))) return e
+        if (!short && ck(e.text).includes(ck(text))) return e
       }
       return undefined
     }
@@ -177,6 +358,15 @@
     }
   }
 
+  // Common leading letters of two strings.
+  function commonPrefix(a, b) {
+    let i = 0
+    while (i < a.length && a[i] === b[i]) i++
+    return i
+  }
+  // A non-final utterance cut off by a stream restart is continued by the new stream within this long.
+  const RESTART_CONTINUE_MS = 15000
+
   /**
    * Utterances from a structured caption stream (Meet's captions_v2 channel), where every update
    * carries an utterance's whole current text and a version. No text merging is needed: the
@@ -190,17 +380,26 @@
       this.entries = []
       this.byKey = new Map()
       this.names = new Map()
+      this.unnamed = new Map() // device -> number in first-seen order, for "Unknown speaker N"
       this.dirty = false
     }
 
     add(u, t = this.now()) {
       const text = norm(u.text)
-      const key = `${u.epoch || 0}|${u.device}|${u.id}`
+      const epoch = u.epoch || 0
+      const key = `${epoch}|${u.device}|${u.id}`
       const e = this.byKey.get(key)
       if (e) {
-        if (u.version < e.version) return
+        if (u.version < e.version) {
+          // Ids restarted under us (a resubscription we didn't see): a much lower version with
+          // unrelated text is a new utterance, not a late copy of this one.
+          if (!(e.version - u.version > 1 && text && commonPrefix(ck(text), ck(e.text)) < 2)) return
+          this.byKey.delete(key)
+          return this.add(u, t)
+        }
+        // A re-delivery of the same version never turns a final line live again.
+        e.final = u.version === e.version ? e.final || !!u.final : !!u.final
         e.version = u.version
-        e.final = !!u.final
         if (text && text !== e.text) {
           e.text = text
           e.end = t
@@ -209,10 +408,36 @@
         return
       }
       if (!text) return
-      const entry = { device: u.device, text, start: t, end: t, version: u.version, final: !!u.final }
+      // The stream restarted mid-utterance: the new stream carries on the old, unfinished one.
+      const cont = this._continued(u.device, epoch, text, t)
+      if (cont) {
+        this.byKey.set(key, cont)
+        cont.epoch = epoch
+        cont.version = u.version
+        cont.final = !!u.final
+        if (ck(text).length >= ck(cont.text).length) cont.text = text
+        cont.end = t
+        this.dirty = true
+        return
+      }
+      if (!this.unnamed.has(u.device)) this.unnamed.set(u.device, this.unnamed.size + 1)
+      const entry = { device: u.device, epoch, text, start: t, end: t, version: u.version, final: !!u.final }
       this.byKey.set(key, entry)
       this.entries.push(entry)
       this.dirty = true
+    }
+
+    // The device's latest utterance, if it is from an earlier stream, unfinished, recent, and
+    // the new text starts the same way.
+    _continued(device, epoch, text, t) {
+      for (let i = this.entries.length - 1; i >= 0; i--) {
+        const e = this.entries[i]
+        if (e.device !== device) continue
+        if (e.epoch === epoch || e.final || t - e.end > RESTART_CONTINUE_MS) return undefined
+        const a = ck(e.text), b = ck(text)
+        return Math.min(a.length, b.length) >= 2 && (b.startsWith(a) || a.startsWith(b)) ? e : undefined
+      }
+      return undefined
     }
 
     setName(device, name) {
@@ -222,22 +447,28 @@
       if (this.entries.some((e) => e.device === device)) this.dirty = true
     }
 
+    // A device nobody has named is "Unknown speaker N", numbered in the order they first spoke,
+    // so two unnamed people are never read as one.
+    speaker(device) {
+      return this.names.get(device) || `Unknown speaker ${this.unnamed.get(device) || 1}`
+    }
+
     snapshot() {
       this.dirty = false
       return this.entries
         .filter((e) => e.text)
-        .map((e) => ({ speaker: this.names.get(e.device) || "Unknown", text: e.text, start: e.start, end: e.end }))
+        .map((e) => ({ speaker: this.speaker(e.device), device: e.device, text: e.text, start: e.start, end: e.end }))
     }
 
     // Same entries as snapshot(), for display: leaves dirty alone so autosave still fires.
     view() {
       return this.entries
         .filter((e) => e.text)
-        .map((e) => ({ speaker: this.names.get(e.device) || "Unknown", text: e.text, start: e.start, end: e.end, live: !e.final }))
+        .map((e) => ({ speaker: this.speaker(e.device), device: e.device, text: e.text, start: e.start, end: e.end, live: !e.final }))
     }
   }
 
-  const api = { mergeText, CaptionTracker, UtteranceTracker, norm }
+  const api = { mergeText, mergeSources, CaptionTracker, UtteranceTracker, norm }
   root.CallScribe = Object.assign(root.CallScribe || {}, api)
   if (typeof module !== "undefined" && module.exports) module.exports = api
 })(typeof globalThis !== "undefined" ? globalThis : this)

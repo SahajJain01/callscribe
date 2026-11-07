@@ -81,7 +81,7 @@ test("UtteranceTracker: latest version wins, one entry per utterance, names reso
   }
   let s = tr.snapshot()
   assert.equal(s.length, 4)
-  assert.equal(s[0].speaker, "Unknown")
+  assert.equal(s[0].speaker, "Unknown speaker 1")
   assert.equal(s[0].text, "Hello everyone! This is the first test of the caption.")
   assert.equal(s[3].text, "over the river.")
   assert.ok(s.every((e, i) => e.start <= e.end && (i === 0 || e.start >= s[i - 1].start)))

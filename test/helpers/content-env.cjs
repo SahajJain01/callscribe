@@ -47,6 +47,7 @@ function createContent(opts = {}) {
     micToggle: () => micEl,
     captionsOn: () => false,
     captionRows: () => [],
+    ...(opts.adapter || {}),
   }
   const observers = []
   class MutationObserver {
@@ -116,7 +117,10 @@ function createContent(opts = {}) {
   }
 
   const errors = []
-  const CallScribe = { ...merge, adapters: [adapter], createOverlay, bridge }
+  // merge.js is loaded outside the vm, so its default clock would be the real one: use the fake clock.
+  const CaptionTracker = class extends merge.CaptionTracker { constructor(n = () => now) { super(n) } }
+  const UtteranceTracker = class extends merge.UtteranceTracker { constructor(n = () => now) { super(n) } }
+  const CallScribe = { ...merge, CaptionTracker, UtteranceTracker, adapters: [adapter], createOverlay, bridge }
   const ctx = {
     window: win, document: doc, location: { href: "https://app.slack.com/client", hostname: "app.slack.com" },
     chrome, CallScribe, MutationObserver, setTimeout, clearTimeout, setInterval, clearInterval: clearTimeout,

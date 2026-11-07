@@ -162,8 +162,10 @@
   }
 
   // Platforms with a structured caption feed (Meet) don't need captions drawn on the page.
-  // The DOM tracker stays as the fallback when the feed delivers nothing.
-  const names = new Map() // speaker id -> display name, learned before or during the call
+  // The DOM tracker is the fallback while the feed is late or gone; the transcript is the
+  // union of both (CS.mergeSources), so neither source's lines are lost.
+  // Speaker id -> display name, learned before or during the call; cleared when a call ends.
+  const names = new Map()
   const stream = adapter.createCaptionStream
     ? adapter.createCaptionStream({
         toPage,
@@ -207,7 +209,7 @@
       audio: session.audioSaveFailed ? "save-failed" : session.audio,
       micMuted: lastMuted,
       micRecorded: Boolean(rec && !rec.paused && rec.includeMic),
-      lines: feed.length ? feed : session.tracker.view(),
+      lines: CS.mergeSources(feed, session.tracker.view()),
       lastCaptionAt: session.lastCaptionAt,
       canHideCaptions: Boolean(adapter.captionContainer),
       captionsHidden: settings.hideCaptions !== false,
@@ -347,15 +349,13 @@
     try {
       if (adapter.inCall()) s.title = adapter.title() || s.title
     } catch {}
-    // Prefer the caption feed; the on-page captions are only used if it captured nothing.
-    const fromFeed = s.utterances.entries.length > 0
-    const utterances = fromFeed ? s.utterances.snapshot() : s.tracker.snapshot()
-    ;(fromFeed ? s.tracker : s.utterances).dirty = false
+    // The caption feed plus every on-page caption it doesn't already hold (transcript C1 / lifecycle F8).
+    const utterances = CS.mergeSources(s.utterances.snapshot(), s.tracker.snapshot())
     // rev: a retried older snapshot never overwrites a newer one. A save that keeps failing
     // is redone from the latest state on the next heartbeat.
     post(s, { type: "session-update", id: s.id, rev: ++s.rev, title: s.title, utterances, captionsOn: captionsOn() }, () => {
       s.savedAt = 0
-      ;(fromFeed ? s.utterances : s.tracker).dirty = true
+      s.utterances.dirty = true
     })
   }
 
@@ -377,6 +377,7 @@
     const s = session
     readCaptions()
     session = null
+    names.clear()
     // Local cleanup first: persistence below can find the extension gone.
     stopCapture()
     syncOverlay()
@@ -543,7 +544,7 @@
           captionsOn: captionsOn(),
           hint: adapter.hints && adapter.hints.captionsOff,
           session: session
-            ? { id: session.id, lines: session.utterances.entries.length || session.tracker.entries.length, startedAt: session.startedAt }
+            ? { id: session.id, lines: CS.mergeSources(session.utterances.view(), session.tracker.view()).length, startedAt: session.startedAt }
             : null,
         })
       }
