@@ -71,6 +71,7 @@
       ],
       "js": [
         "src/shared/merge.js",
+        "src/shared/languages.js",
         "src/shared/meet-proto.js",
         "src/content/adapters/google-meet.js",
         "src/content/overlay.js",
@@ -84,6 +85,7 @@
       ],
       "js": [
         "src/shared/merge.js",
+        "src/shared/languages.js",
         "src/content/adapters/slack-huddle.js",
         "src/content/overlay.js",
         "src/content/main.js"
