@@ -131,6 +131,16 @@ async function settingsUi() {
       await chrome.storage.local.set({ settings: cur })
     })
   }
+  // Meet caption language: the saved choice, else the browser's (src/shared/languages.js).
+  const CS = globalThis.CallScribe
+  const sel = document.getElementById("lang")
+  for (const [code, name] of CS.CAPTION_LANGUAGES) sel.append(new Option(name, code))
+  sel.value = CS.resolveCaptionLanguage(settings.captionLang, [...(navigator.languages || [navigator.language])])
+  sel.addEventListener("change", async () => {
+    const cur = (await chrome.storage.local.get("settings")).settings || {}
+    cur.captionLang = sel.value
+    await chrome.storage.local.set({ settings: cur })
+  })
 }
 
 current()

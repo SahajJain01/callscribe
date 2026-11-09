@@ -34,10 +34,15 @@ Works in Chrome, Edge, Brave and other Chromium browsers. Slack huddles must be 
   captions from Meet's caption feed directly, so you don't need to turn on CC and Meet's
   caption box stays off. If the feed doesn't start within a few seconds, it falls back to
   turning Meet's captions on (setting) and reading them from the page.
+  Captions are in the **caption language** you pick in the overlay (click it to expand, then
+  the menu next to Captions) or in popup → Settings. It starts as your browser's language
+  (e.g. a Vietnamese browser gets Vietnamese captions) and is kept for later calls. It wins
+  over the language set in Meet's own CC menu, and Meet's on-screen captions follow it.
 - **Slack huddle**: join the huddle in app.slack.com. With "Turn captions on automatically"
   on (the default), CallScribe clicks the huddle's CC button for you. Otherwise turn on
   captions yourself (CC in the huddle window), or set Slack Preferences → Audio & video →
-  turn on captions by default when joining huddles.
+  turn on captions by default when joining huddles. Slack chooses the caption language
+  itself; change it in Slack's huddle caption settings.
 - The toolbar icon shows **REC** during a call. A small overlay on the call shows that it's
   recording (see Overlay below).
 - The popup shows the live line count and audio size, and lists every call stored in the
@@ -50,7 +55,7 @@ Works in Chrome, Edge, Brave and other Chromium browsers. Slack huddles must be 
 Settings (popup → Settings): auto-enable captions, hide captions on screen (on by default; the
 box is moved off-screen but still read, so the transcript is unaffected; in Meet the video tiles
 expand into the space captions would take), show recording overlay, record audio, include my
-microphone, auto-save files when a call ends. With auto-save off, use the popup buttons.
+microphone, auto-save files when a call ends, caption language (Meet). With auto-save off, use the popup buttons.
 
 Your microphone is recorded only while the call page shows you are unmuted. If CallScribe
 can't tell (for example, it can't find the mute button), your mic is not recorded.
@@ -88,7 +93,7 @@ video tiles go back to how the call app shows them.
 | Meet caption feed | `src/page/meet-channels.js`, `src/shared/meet-proto.js` | Meet's server transcribes every call and streams captions on a WebRTC data channel (`captions_v2`) to any client that asks. The page tap forwards that channel's messages to the content script and sends the same "captions on" request the CC button sends, so captions arrive with CC off, live even in a hidden tab. Each update carries an utterance's full current text, a version and the speaker's device id (named from the participant tiles or Meet's `collections` channel). If you turn CC off in Meet (which stops the feed), CallScribe asks again. |
 | Render keepalive | `src/page/render-keepalive.js` | Meet applies caption updates in `requestAnimationFrame`, which Chrome stops running when the tab isn't drawn (background tab, minimized window, Companion-mode tab). During a call, each animation frame gets a fallback timer so captions keep reaching the page, and get timestamped, while the tab is hidden. |
 | Watcher | `src/content/main.js` | Picks the adapter for the site, detects call start/end, takes captions from the platform's feed (Meet) or reads caption rows from the page, auto-enables captions (in Meet only as a fallback), forwards mute state and audio chunks. |
-| Overlay | `src/content/overlay.js` | A small draggable pill at the top of the call (elapsed time and the latest caption) that expands into a status row (caption source, audio, mic, lines) and a live transcript you can scroll back through to the start of the call. When captions are read from the page (CC), the status row has a **Hide on page** / **Show on page** button for the same setting as the popup's. Audio shows **save failed** if the browser couldn't store the audio, and a **Transcript: save failed** row appears while it can't store the transcript. Drawn in a closed shadow root, never takes keyboard focus, and only shown while a call is being recorded (or to say the tab must be reloaded after an update). Turn it off with "Show recording overlay on the call". |
+| Overlay | `src/content/overlay.js` | A small draggable pill at the top of the call (elapsed time and the latest caption) that expands into a status row (caption source, audio, mic, lines) and a live transcript you can scroll back through to the start of the call. When captions are read from the page (CC), the status row has a **Hide on page** / **Show on page** button for the same setting as the popup's. In Meet the Captions row has a caption-language menu; in Slack, a line says where to change Slack's caption language. Audio shows **save failed** if the browser couldn't store the audio, and a **Transcript: save failed** row appears while it can't store the transcript. Drawn in a closed shadow root, never takes keyboard focus, and only shown while a call is being recorded (or to say the tab must be reloaded after an update). Turn it off with "Show recording overlay on the call". |
 | Caption merging | `src/shared/merge.js` | Caption UIs rewrite rows as recognition improves and trim long rows. Rows are merged with word-level fuzzy alignment so corrections replace text instead of duplicating it. |
 | Storage/export | `src/background/index.js`, `src/shared/db.js`, `src/shared/lifecycle.js` | IndexedDB keeps the transcript and audio chunks as they stream in, so a crash or closed tab loses at most a few seconds. On call end (or tab close / stale session) it saves the audio (`.webm` or `.ogg`), then the `.md`. Only a download Chrome reports as complete counts as saved. The save is a job stored with the call, so it resumes after a restart. A sweep (Chrome start, install, every 2 minutes, and when a failed save is due for its retry) ends stale calls, resumes saves and deletes calls 30 days after all their files were saved. |
 

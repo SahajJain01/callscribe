@@ -126,6 +126,20 @@ const popupEval = async (expression) => (await send("Runtime.evaluate", { expres
 await sleep(1000)
 const popupAsk = (msg) => popupEval(`chrome.runtime.sendMessage(${JSON.stringify(msg)})`)
 
+// ---------- popup: caption language setting
+{
+  console.log("-- popup caption language")
+  const first = await popupEval(`(() => { const s = document.getElementById("lang"); return s && { value: s.value, n: s.options.length, vi: [...s.options].some((o) => o.value === "vi-VN" && o.textContent === "Tiếng Việt") } })()`)
+  check(first && first.n > 10 && first.vi && /^[a-z]/.test(first.value), `popup lists caption languages with a browser default (${JSON.stringify(first)})`)
+  await popupEval(`(() => { const s = document.getElementById("lang"); s.value = "vi-VN"; s.dispatchEvent(new Event("change")); return true })()`)
+  await sleep(300)
+  const stored = await popupEval(`chrome.storage.local.get("settings").then((r) => r.settings)`)
+  check(stored && stored.captionLang === "vi-VN" && stored.recordAudio !== undefined, `choosing saves captionLang and keeps other settings (${JSON.stringify(stored)})`)
+  await send("Page.reload", {}, popupSid)
+  await sleep(1000)
+  check((await popupEval(`document.getElementById("lang").value`)) === "vi-VN", "the popup shows the saved language after reopening")
+}
+
 const now = () => Date.now()
 const chunkB64 = (n, fill) => Buffer.alloc(n, fill).toString("base64")
 const start = (id, title, startedAt = now()) => tab.ask({ type: "session-start", session: { id, platform: "slack-huddle", platformName: "Slack huddle", title, url: "https://app.slack.com/client/T000/C000", startedAt } })

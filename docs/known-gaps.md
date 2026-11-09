@@ -10,6 +10,8 @@ These were found or deferred during the November 2026 audit and fixes (0.3.0). N
   - overlay placement against the real Meet and Slack controls;
   - the cost of the body-wide mute observer (`watchMute`, `src/content/main.js`) on a busy Meet page.
 - **Web Store update mid-call.** Only a reload of the unpacked extension has been tested. The tab should show "CallScribe was updated. Reload this tab to keep recording" and give Meet its captions and layout back.
+- **Caption language codes.** The menu's codes (`src/shared/languages.js`) follow the `en-US` form Meet's CC request uses, but only `en-US` has been seen on a live call. Check `vi-VN` first (the Web Store review that asked for it), then the `cmn-Hans-CN` / `cmn-Hant-TW` Chinese codes. A code Meet rejects gets no reply; after five tries CallScribe stops holding back captions in Meet's own language.
+- **Caption language switch-over.** When Meet's CC asks for another language, captions tagged with that language are dropped until Meet answers CallScribe's request. Not checked on a live call: how long the overlap lasts, and whether Meet's CC menu then shows the wrong language.
 - **Merge thresholds.** The rules that remove lines both caption sources caught were tuned on synthetic cases and two recorded fixtures. They have not been tuned on real Chinese, Japanese or Thai captions.
 
 ## Behaviour gaps

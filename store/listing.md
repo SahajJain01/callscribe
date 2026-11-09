@@ -20,6 +20,7 @@ HOW IT WORKS
 FEATURES
 • Starts and stops by itself when you join and leave a call
 • Speaker names from Meet and Slack captions, with corrections merged so nothing is repeated
+• Pick the caption language for Meet right on the overlay (Tiếng Việt, 日本語, Español and more). It starts as your browser's language
 • Audio backup of everyone in the call, including you only while the call shows you're unmuted (never while you're muted, or when CallScribe can't tell)
 • Captions can stay hidden on screen and are still saved
 • Every stored call is listed in the popup with Transcript / Audio / Delete buttons
