@@ -51,10 +51,11 @@
   }
   const isGzip = (b, at) => b.length > at + 2 && b[at] === 0x1f && b[at + 1] === 0x8b && b[at + 2] === 8
 
-  // The caption language to request when Meet hasn't requested one itself in this page.
-  function defaultLanguage() {
-    const l = navigator.language || ""
-    return /^[a-z]{2,3}-[A-Z]{2}$/.test(l) ? l : "en-US"
+  // The caption language to ask for when the content script doesn't pass one: the browser's.
+  function browserLanguage() {
+    const nav = typeof navigator !== "undefined" ? navigator : {}
+    if (typeof CS.resolveCaptionLanguage !== "function") return "en-US" // languages.js not loaded
+    return CS.resolveCaptionLanguage(undefined, nav.languages && nav.languages.length ? [...nav.languages] : [nav.language])
   }
 
   /**
@@ -62,15 +63,26 @@
    * with CC left off: the page tap (src/page/meet-channels.js) forwards channel traffic here and
    * sends the "captions on" request we build. Meet's own code keeps acknowledging updates.
    * If the user turns CC off in Meet, that request stops the stream, so we ask again.
+   * The language is CallScribe's choice (language()): when Meet's CC asks for another one, we
+   * ask for ours again, and captions in the other language are dropped until our reply.
    */
-  function createCaptionStream({ toPage, onUtterance, onName }) {
+  const sameLang = (a, b) => String(a || "").toLowerCase() === String(b || "").toLowerCase()
+
+  function createCaptionStream({ toPage, onUtterance, onName, language }) {
     const P = CS.MeetProto
     const OWN_SEQ = 100000 // far above Meet's own request numbers, so replies can't be confused
     let seq = OWN_SEQ
-    let wanted = false
+    let want = false
     let open = false
-    let meetLang = null // last language Meet itself requested in this page ("" = CC off), null = none
-    let lastLang = "" // last non-empty language Meet used
+    const wanted = () => {
+      try {
+        const l = language && language()
+        if (l && typeof l === "string") return l
+      } catch {}
+      return browserLanguage()
+    }
+    let asked = "" // the language of our last request
+    let switching = false // a request in another language than ours is (or may be) live until our reply
     let pending = 0 // seq of our request awaiting a reply
     let sentAt = 0
     let tries = 0
@@ -79,11 +91,15 @@
     let lastCaptionAt = 0
 
     function request() {
-      if (!wanted || !open || flowing || pending || tries >= 5) return
+      // Out of tries with no reply (e.g. a code Meet doesn't take): stop holding back captions
+      // in Meet's own language, so a bad choice can't leave the call with nothing.
+      if (tries >= 5 && !pending) switching = false
+      if (!want || !open || flowing || pending || tries >= 5) return
       pending = ++seq
       sentAt = Date.now()
       tries++
-      const buf = P.encodeLanguage(pending, lastLang || defaultLanguage()).buffer
+      asked = wanted()
+      const buf = P.encodeLanguage(pending, asked).buffer
       toPage({ type: "dc-send", label: "captions_v2", buf })
     }
 
@@ -123,12 +139,19 @@
           if (m.dir === "out") {
             const d = P.decodeOutgoing(bytes)
             if (!d || d.kind !== "language" || d.seq >= OWN_SEQ) return
-            meetLang = d.lang
             if (d.lang) {
-              lastLang = d.lang
               // A new subscription, even while ours flows: its utterance ids may start again (I4).
               epoch++
-              flowing = true
+              if (sameLang(d.lang, wanted())) {
+                flowing = true
+              } else {
+                // Meet's CC wants another language: ours wins, ask again.
+                switching = true
+                flowing = false
+                pending = 0
+                tries = 0
+                request()
+              }
             } else {
               // Meet turned CC off, which stops the stream for this page too: ask again.
               stopped()
@@ -143,20 +166,34 @@
               tries = 0
               epoch++
               flowing = true
+              switching = false
             } else if (d.kind === "captions") {
               lastCaptionAt = m.t
-              for (const u of d.utterances) onUtterance({ ...u, epoch }, m.t)
+              const lang = wanted()
+              for (const u of d.utterances) {
+                if (switching && u.lang && !sameLang(u.lang, lang)) continue
+                onUtterance({ ...u, epoch }, m.t)
+              }
             }
           }
         }
       },
       start() {
-        wanted = true
+        want = true
         tries = 0
         request()
       },
       stop() {
-        wanted = false
+        want = false
+      },
+      // The chosen language changed: ask for it now, even while captions flow.
+      languageChanged() {
+        if (sameLang(asked, wanted())) return
+        switching = true
+        flowing = false
+        pending = 0
+        tries = 0
+        request()
       },
       tick() {
         if (pending && Date.now() - sentAt > 5000) pending = 0 // no reply: try again
