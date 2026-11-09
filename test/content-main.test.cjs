@@ -605,3 +605,55 @@ test("orphaned: the hidden-captions style is removed and the tile space is given
   c.advance(5000)
   assert.equal(reclaim.length, n, "still adjusting the page after orphaning")
 })
+
+// --- caption language (docs/superpowers/specs/2026-11-10-caption-language-design.md)
+function meetStream() {
+  const calls = { changed: 0, opts: null }
+  const adapter = {
+    id: "google-meet",
+    createCaptionStream: (o) => {
+      calls.opts = o
+      return { handle() {}, start() {}, stop() {}, tick() {}, active: () => false, languageChanged: () => calls.changed++ }
+    },
+  }
+  return { calls, adapter }
+}
+
+test("caption language: the stream asks for the saved choice, else the browser's; a change re-asks once", async () => {
+  const { calls, adapter } = meetStream()
+  const { c } = await joined({ adapter, navigator: { language: "vi", languages: ["vi"] } })
+  assert.equal(calls.opts.language(), "vi-VN")
+  await c.setSettings({ captionLang: "ja-JP" })
+  assert.equal(calls.opts.language(), "ja-JP")
+  assert.equal(calls.changed, 1)
+  await c.setSettings({ hideCaptions: true })
+  assert.equal(calls.changed, 1, "a setting that doesn't change the language re-asked")
+  await leave(c)
+})
+
+test("caption language: Meet's overlay gets the menu state, and choosing writes the setting", async () => {
+  const { adapter } = meetStream()
+  const { c } = await joined({ adapter, settings: { captionLang: "vi-VN" } })
+  c.advance(1000)
+  await c.flush()
+  const ov = c.overlays.at(-1)
+  const st = ov.updates.at(-1)
+  assert.equal(st.captionLanguage.code, "vi-VN")
+  assert.ok(st.captionLanguage.options.some(([code]) => code === "vi-VN"))
+  assert.equal(st.captionHint, null)
+  await ov.opts.onCaptionLanguage("ko-KR")
+  await c.flush()
+  assert.equal((await c.chrome.storage.local.get("settings")).settings.captionLang, "ko-KR")
+  assert.equal((await c.chrome.storage.local.get("settings")).settings.recordAudio, true, "other settings kept")
+  await leave(c)
+})
+
+test("caption language: Slack's overlay gets a hint instead of a menu", async () => {
+  const { c } = await joined()
+  c.advance(1000)
+  await c.flush()
+  const st = c.overlays.at(-1).updates.at(-1)
+  assert.equal(st.captionLanguage, null)
+  assert.match(st.captionHint, /Slack/)
+  await leave(c)
+})

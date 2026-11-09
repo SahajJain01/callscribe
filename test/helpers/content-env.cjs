@@ -6,6 +6,7 @@ const path = require("node:path")
 
 const ROOT = path.join(__dirname, "../..")
 const merge = require(path.join(ROOT, "src/shared/merge.js"))
+const languages = require(path.join(ROOT, "src/shared/languages.js"))
 
 function createContent(opts = {}) {
   let now = 1_000_000
@@ -127,12 +128,13 @@ function createContent(opts = {}) {
   // merge.js is loaded outside the vm, so its default clock would be the real one: use the fake clock.
   const CaptionTracker = class extends merge.CaptionTracker { constructor(n = () => now) { super(n) } }
   const UtteranceTracker = class extends merge.UtteranceTracker { constructor(n = () => now) { super(n) } }
-  const CallScribe = { ...merge, CaptionTracker, UtteranceTracker, adapters: [adapter], createOverlay, bridge }
+  const CallScribe = { ...merge, ...languages, CaptionTracker, UtteranceTracker, adapters: [adapter], createOverlay, bridge }
   const ctx = {
     window: win, document: doc, location: { href: "https://app.slack.com/client", hostname: "app.slack.com" },
     chrome, CallScribe, MutationObserver, setTimeout, clearTimeout, setInterval, clearInterval: clearTimeout,
     Date: FakeDate, Math, JSON, Promise, Map, Set, WeakMap, Object, Array, ArrayBuffer, Uint8Array, Number, String, Boolean, Error,
     console: { log() {}, debug() {}, warn() {}, error: (...a) => errors.push(a) }, btoa, Event, EventTarget,
+    navigator: { language: "en-US", languages: ["en-US"], ...(opts.navigator || {}) },
   }
   ctx.globalThis = ctx
   win.top = win

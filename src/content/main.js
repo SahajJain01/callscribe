@@ -209,9 +209,16 @@
   // union of both (CS.mergeSources), so neither source's lines are lost.
   // Speaker id -> display name, learned before or during the call; cleared when a call ends.
   const names = new Map()
+  // The caption language CallScribe asks Meet for: the saved choice, else the browser's.
+  const browserLangs = () => {
+    const nav = typeof navigator !== "undefined" ? navigator : {}
+    return nav.languages && nav.languages.length ? [...nav.languages] : [nav.language]
+  }
+  const captionLanguage = () => CS.resolveCaptionLanguage(settings.captionLang, browserLangs())
   const stream = adapter.createCaptionStream
     ? adapter.createCaptionStream({
         toPage,
+        language: captionLanguage,
         onUtterance: (u, t) => {
           if (!session) return
           session.utterances.add(u, t)
@@ -231,8 +238,12 @@
   if (stream) toPage({ type: "dc-hello" })
 
   function onSettings(next) {
+    const lang = captionLanguage()
     Object.assign(settings, next || {})
+    // A key removed from storage (e.g. captionLang reset) must not linger here.
+    if (next && !("captionLang" in next)) delete settings.captionLang
     if (orphaned) return
+    if (stream && stream.languageChanged && captionLanguage() !== lang) stream.languageChanged()
     applyHide()
     reconcileRecorder()
     syncOverlay()
@@ -274,6 +285,19 @@
       lastCaptionAt: session.lastCaptionAt,
       canHideCaptions: Boolean(adapter.captionContainer),
       captionsHidden: settings.hideCaptions !== false,
+      // Meet takes a caption language from us; Slack's is set in Slack.
+      captionLanguage: stream ? { code: captionLanguage(), options: CS.CAPTION_LANGUAGES } : null,
+      captionHint: stream ? null : SLACK_LANGUAGE_HINT,
+    }
+  }
+  const SLACK_LANGUAGE_HINT = "Caption language: change it in Slack's huddle caption settings"
+  async function setCaptionLanguage(code) {
+    try {
+      if (!CS.isCaptionLanguage(code)) return
+      const cur = (await chrome.storage.local.get("settings")).settings || {}
+      await chrome.storage.local.set({ settings: { ...cur, captionLang: code } })
+    } catch (e) {
+      console.debug("[CallScribe] caption language change failed", e)
     }
   }
   // The overlay's Hide/Show button flips the same setting as the popup's "Hide captions on screen".
@@ -297,7 +321,7 @@
       if (orphaned) return
       if (!session) linesMemo = null
       if (!session || settings.showOverlay === false) return removeOverlay()
-      if (!overlay) overlay = CS.createOverlay({ doc: document, storage: chrome.storage.local, onToggleCaptions: setCaptionsHidden })
+      if (!overlay) overlay = CS.createOverlay({ doc: document, storage: chrome.storage.local, onToggleCaptions: setCaptionsHidden, onCaptionLanguage: setCaptionLanguage })
       overlay.update(overlayState())
     } catch (e) {
       console.debug("[CallScribe] overlay sync failed", e)
