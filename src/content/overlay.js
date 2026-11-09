@@ -62,7 +62,7 @@
   // The pill then carries only that warning.
   function overlayModel(state, now) {
     if (state.orphan) {
-      return { orphan: String(state.orphan), elapsed: "", latest: null, warn: true, dotWarn: true, status: [], captionToggle: null }
+      return { orphan: String(state.orphan), elapsed: "", latest: null, warn: true, dotWarn: true, status: [], captionToggle: null, language: null, languageHint: null }
     }
     const startedAt = state.startedAt || now
     const lines = state.lines || []
@@ -86,6 +86,9 @@
       status,
       // Captions read off the page (CC): offer the "Hide captions on screen" setting right here.
       captionToggle: state.source === "cc" && state.canHideCaptions ? { hidden: !!state.captionsHidden } : null,
+      // Meet: the caption language menu. Slack: where to change it in Slack.
+      language: state.captionLanguage && state.captionLanguage.code ? state.captionLanguage : null,
+      languageHint: state.captionHint || null,
     }
   }
 
@@ -162,6 +165,9 @@
 .cc { font: inherit; font-size: 10.5px; margin-left: 6px; padding: 0 7px; border-radius: 999px; cursor: pointer;
   color: #8ab4f8; background: transparent; border: 1px solid #5f6368; line-height: 16px; }
 .cc:hover { background: rgba(138,180,248,.12); }
+.lang { font: inherit; font-size: 10.5px; margin-left: 6px; max-width: 130px; padding: 0 4px; border-radius: 6px; cursor: pointer;
+  color: #e8eaed; background: #303134; border: 1px solid #5f6368; line-height: 16px; }
+.hint { flex-basis: 100%; color: #9aa0a6; }
 .log { flex: 0 1 auto; min-height: 0; max-height: 220px; overflow-y: auto; padding: 6px 11px 8px; overscroll-behavior: contain; overflow-anchor: none;
   scrollbar-width: thin; scrollbar-color: #5f6368 transparent; }
 .row { margin-bottom: 4px; overflow-wrap: anywhere; }
@@ -216,6 +222,37 @@
     const cTitle = el("span", null, hd, "CallScribe · 0:00")
     el("span", "x", hd, "▴")
     const st = el("div", "st", card)
+    // Caption language menu (Meet): built once, moved into the Captions row on each rebuild.
+    const langSel = doc.createElement("select")
+    langSel.className = "lang"
+    langSel.title = "Caption language"
+    langSel.setAttribute("aria-label", "Caption language")
+    let langSlot = null
+    let langKey = ""
+    for (const type of ["pointerdown", "pointerup", "click"]) langSel.addEventListener(type, (e) => e.stopPropagation())
+    langSel.addEventListener("change", (e) => {
+      e.stopPropagation()
+      if (opts.onCaptionLanguage) opts.onCaptionLanguage(langSel.value)
+    })
+    function syncLanguage(lang) {
+      if (!lang) {
+        if (langSel.parentNode) langSel.remove()
+        return
+      }
+      const key = lang.options.map((o) => o[0]).join(",")
+      if (langKey !== key) {
+        langKey = key
+        langSel.textContent = ""
+        for (const [code, name] of lang.options) {
+          const o = doc.createElement("option")
+          o.value = code
+          o.textContent = name
+          langSel.appendChild(o)
+        }
+      }
+      if (langSel.value !== lang.code) langSel.value = lang.code
+      if (langSlot && langSel.parentNode !== langSlot) langSlot.appendChild(langSel)
+    }
     const log = el("div", "log", card)
     const empty = el("div", "empty", log, "waiting for captions…")
     const list = el("div", null, log)
@@ -369,9 +406,11 @@
       if (seen.tailCls !== tailCls) pTail.className = seen.tailCls = tailCls
       attr("data-latest", latest ? latest.text : "")
 
-      const stKey = JSON.stringify([m.status, m.captionToggle])
+      const stKey = JSON.stringify([m.status, m.captionToggle, m.languageHint])
       if (seen.st !== stKey) {
         seen.st = stKey
+        // The language menu lives on across status rebuilds, so an open dropdown survives a refresh.
+        if (langSel.parentNode) langSel.remove()
         st.textContent = ""
         for (const r of m.status) {
           const item = el("span", null, st, `${r.label} `)
@@ -385,8 +424,11 @@
               if (opts.onToggleCaptions) opts.onToggleCaptions(hide)
             })
           }
+          if (r.label === "Captions") langSlot = item
         }
+        if (m.languageHint) el("span", "hint", st, m.languageHint)
       }
+      syncLanguage(m.language)
       attr("data-cc", m.captionToggle ? (m.captionToggle.hidden ? "hidden" : "shown") : "")
       if (expanded) renderList(state)
       placeIfResized()
@@ -458,6 +500,8 @@
       return e.clientX >= r.left + log.clientLeft + log.clientWidth
     }
     shadow.addEventListener("mousedown", (e) => {
+      // The language menu needs its mousedown to open (and takes focus while it's used).
+      if (e.target === langSel || langSel.contains(e.target)) return
       if (!onLogScrollbar(e)) e.preventDefault()
     })
 

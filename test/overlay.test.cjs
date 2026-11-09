@@ -272,3 +272,16 @@ test("renderRows renders only the window from a given line on (runtime I3)", () 
   assert.equal(list.children[0].text.textContent, "line 1950")
   assert.equal(list.children[49].text.textContent, "line 1999")
 })
+
+test("overlayModel passes the caption language menu and the Slack hint through", () => {
+  const options = [["en-US", "English (US)"], ["vi-VN", "Tiếng Việt"]]
+  const meet = overlayModel(state({ captionLanguage: { code: "vi-VN", options }, captionHint: null }), T0 + 1000)
+  assert.deepEqual(meet.language, { code: "vi-VN", options })
+  assert.equal(meet.languageHint, null)
+  const slack = overlayModel(state({ platform: "slack-huddle", captionLanguage: null, captionHint: "Caption language: in Slack" }), T0 + 1000)
+  assert.equal(slack.language, null)
+  assert.equal(slack.languageHint, "Caption language: in Slack")
+  const none = overlayModel(state({}), T0 + 1000)
+  assert.equal(none.language, null)
+  assert.equal(none.languageHint, null)
+})

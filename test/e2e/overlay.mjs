@@ -94,7 +94,7 @@ try {
     addEventListener("pointerup", () => { t = performance.now() }, true)
     addEventListener("pointerup", () => { if (t) window.__handler.push(performance.now() - t); t = 0 })
     document.getElementById("probe").focus()
-    window.__ov = CallScribe.createOverlay({ doc: document, storage: null })
+    window.__ov = CallScribe.createOverlay({ doc: document, storage: null, onCaptionLanguage: (code) => { window.__picked = code } })
     window.__ov.update(window.__state(lines))
     return true
   })()`)
@@ -247,6 +247,43 @@ try {
   results.rtl = rtl
   check(rtl.card === "ltr" && rtl.pill === "ltr" && rtl.log === "ltr", `RTL page: overlay chrome stays ltr (${JSON.stringify(rtl)})`)
   check(rtl.text === "auto" && rtl.name === "auto" && rtl.pillText === "auto" && rtl.pillName === "auto" && /isolate/.test(rtl.textBidi), "caption text and names are dir=auto, isolated")
+
+  // Caption language menu (Meet) and hint (Slack), in the Captions status row.
+  await ev(`(() => {
+    document.documentElement.dir = ""
+    const langs = [["en-US", "English (US)"], ["vi-VN", "Tiếng Việt"], ["ja-JP", "日本語"]]
+    const base = window.__state
+    window.__state = (ls) => ({ ...base(ls), captionLanguage: { code: "vi-VN", options: langs }, captionHint: null })
+    window.__ov.update(window.__state(window.__lines))
+    return true
+  })()`)
+  await sleep(100)
+  const menu = await ev(`(() => { const s = __shadow.querySelector(".st select"); if (!s) return null; window.__sel = s; const b = s.getBoundingClientRect(); return { value: s.value, n: s.options.length, label: s.options[s.selectedIndex].textContent, x: b.left + b.width / 2, y: b.top + b.height / 2 } })()`)
+  check(Boolean(menu) && menu.value === "vi-VN" && menu.n === 3 && menu.label === "Tiếng Việt", `Meet: language menu in the status row shows the chosen language (${JSON.stringify(menu)})`)
+  if (menu) {
+    await mouse(menu.x, menu.y)
+    await sleep(300)
+    const after = await ev(`({ state: document.getElementById("callscribe-overlay").getAttribute("data-state"), focused: __shadow.activeElement === window.__sel })`)
+    check(after.state === "expanded", `clicking the menu doesn't collapse the card (${JSON.stringify(after)})`)
+    check(after.focused, "clicking the menu focuses it, so the dropdown can open (mousedown isn't cancelled)")
+    await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }, sessionId)
+    await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }, sessionId)
+    const kept = await ev(`(() => { window.__ov.update(window.__state(window.__lines)); window.__ov.update(window.__state(window.__lines)); return __shadow.querySelector(".st select") === window.__sel })()`)
+    check(kept, "overlay refreshes keep the same menu element (an open dropdown isn't torn down)")
+    const picked = await ev(`(() => { window.__sel.value = "ja-JP"; window.__sel.dispatchEvent(new Event("change", { bubbles: true })); return window.__picked })()`)
+    check(picked === "ja-JP", `choosing a language calls onCaptionLanguage (${picked})`)
+    await shot("language-meet.png")
+  }
+  await ev(`(() => {
+    const base = window.__state
+    window.__state = (ls) => ({ ...base(ls), platform: "slack-huddle", source: "cc", captionLanguage: null, captionHint: "Caption language: change it in Slack's huddle caption settings" })
+    window.__ov.update(window.__state(window.__lines))
+    return true
+  })()`)
+  await sleep(100)
+  const slack = await ev(`({ select: Boolean(__shadow.querySelector(".st select")), hint: __shadow.querySelector(".st").textContent.includes("Slack's huddle caption settings") })`)
+  check(!slack.select && slack.hint, `Slack: a hint, no menu (${JSON.stringify(slack)})`)
+  await shot("language-slack.png")
 } catch (e) {
   console.log("FAIL", e.stack || e)
   ok = false
