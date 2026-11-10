@@ -62,7 +62,7 @@
   // The pill then carries only that warning.
   function overlayModel(state, now) {
     if (state.orphan) {
-      return { orphan: String(state.orphan), elapsed: "", latest: null, warn: true, dotWarn: true, status: [], language: null, languageHint: null }
+      return { orphan: String(state.orphan), elapsed: "", latest: null, warn: true, dotWarn: true, status: [], language: null, languageHint: null, alert: null }
     }
     const startedAt = state.startedAt || now
     const lines = state.lines || []
@@ -71,6 +71,9 @@
     const audioKey = state.audio === "starting" && now - startedAt > AUDIO_START_MS ? "stalled" : state.audio
     const audio = AUDIO[audioKey] || AUDIO.off
     const status = [captionRow(state, warn), { label: "Audio", ...audio }]
+    // The page scripts never answered: no audio or caption feed until the tab is reloaded.
+    const alert = state.pageLinkDead ? "Audio isn't recording in this tab. Reload the tab" : null
+    if (alert) status.unshift({ label: "Recording", value: "audio broken: reload this tab", level: "warn" })
     // The browser couldn't store the transcript (only shown while that is so).
     const transcriptFailed = state.transcript === "save-failed"
     if (transcriptFailed) status.push({ label: "Transcript", value: "save failed", level: "warn" })
@@ -82,7 +85,8 @@
       elapsed: formatElapsed(now - startedAt),
       latest: last ? { speaker: last.speaker, text: last.text, live: !!last.live } : null,
       warn,
-      dotWarn: warn || audio.level === "warn" || transcriptFailed,
+      dotWarn: warn || audio.level === "warn" || transcriptFailed || Boolean(alert),
+      alert,
       status,
       // Meet: the caption language menu. Slack: where to change it in Slack.
       language: state.captionLanguage && state.captionLanguage.code ? state.captionLanguage : null,
@@ -150,6 +154,7 @@
 .tail { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; direction: rtl; text-align: left; }
 .tail > span { unicode-bidi: isolate; }
 .tail.wait { color: #9aa0a6; direction: ltr; }
+.tail.alert { color: #fdd663; direction: ltr; }
 .live, .tail.live { font-style: italic; }
 .card { position: relative; width: min(310px, calc(var(--cs-vw, 100vw) - 8px)); border-radius: 10px; overflow: hidden;
   display: flex; flex-direction: column; max-height: calc(var(--cs-vh, 100vh) - 12px); }
@@ -405,12 +410,13 @@
       }
       set("el", pEl, m.elapsed)
       set("title", cTitle, `CallScribe · ${m.elapsed}`)
-      const latest = m.latest
+      // A reload warning takes the pill's place for captions: it is what needs doing.
+      const latest = m.alert ? null : m.latest
       set("sp", pSp, latest ? `${latest.speaker}:` : "")
       // Long lines: keep only the tail, the CSS ellipsis trims the rest from the left.
-      const tail = latest ? (latest.text.length > 300 ? latest.text.slice(-300) : latest.text) : "waiting for captions…"
+      const tail = m.alert || (latest ? (latest.text.length > 300 ? latest.text.slice(-300) : latest.text) : "waiting for captions…")
       set("tail", pTailText, tail)
-      const tailCls = !latest ? "tail wait" : latest.live ? "tail live" : "tail"
+      const tailCls = m.alert ? "tail alert" : !latest ? "tail wait" : latest.live ? "tail live" : "tail"
       if (seen.tailCls !== tailCls) pTail.className = seen.tailCls = tailCls
       attr("data-latest", latest ? latest.text : "")
 

@@ -248,6 +248,15 @@ try {
   check(rtl.card === "ltr" && rtl.pill === "ltr" && rtl.log === "ltr", `RTL page: overlay chrome stays ltr (${JSON.stringify(rtl)})`)
   check(rtl.text === "auto" && rtl.name === "auto" && rtl.pillText === "auto" && rtl.pillName === "auto" && /isolate/.test(rtl.textBidi), "caption text and names are dir=auto, isolated")
 
+  // Dead page link: the card's status row and (collapsed) the pill say to reload the tab.
+  const dead = await ev(`(() => {
+    window.__ov.update({ ...window.__state(window.__lines), pageLinkDead: true })
+    const st = __shadow.querySelector(".st").textContent
+    return { st: st.includes("audio broken: reload this tab"), pill: __shadow.querySelector(".pill .tail").textContent }
+  })()`)
+  check(dead.st && dead.pill === "Audio isn't recording in this tab. Reload the tab", `dead page link: status row and pill say to reload (${JSON.stringify(dead)})`)
+  await shot("dead-link-card.png")
+
   // Caption language menu (Meet) and hint (Slack), in the Captions status row.
   await ev(`(() => {
     document.documentElement.dir = ""

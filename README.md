@@ -79,6 +79,9 @@ wakes, the rest of the call is still recorded. If the first part's files were al
 saved, the rest becomes a new entry with its own files, and the first part's files are left
 as they were.
 
+If CallScribe's page scripts don't answer in a call tab (no audio and no caption feed), the
+overlay says "Audio isn't recording in this tab. Reload the tab" after a few seconds.
+
 If the extension is updated or reloaded during a call, the open tab stops recording and the
 overlay says "CallScribe was updated. Reload this tab to keep recording".
 

@@ -16,6 +16,8 @@ These were found or deferred during the November 2026 audit and fixes (0.3.0). N
 
 ## Behaviour gaps
 
+- **Dead page link (seen live 2026-11-10, cause unknown).** On one real 2h15 Meet call, CallScribe's page scripts never answered on the private channel: no audio and no caption feed, so only on-page CC captions were recorded, and that transcript came out with speakers mixed, one line repeated for 25 minutes, and one block duplicated under both names. Reloading the extension fixed it, and it hasn't happened since (12 of 12 calls fine, Chrome 157). Since 0.3.1 the overlay says "Audio isn't recording in this tab. Reload the tab" 5 s into such a call. Still to do: recreate the long-call corruption in the on-page reader. The test rig is two or three Chrome for Testing guests with fake mics playing TTS speech into a solo Meet you host, with CC on.
+
 - **Sleep or a frozen tab mid-call.**
   - When the tab wakes, the rest of the call is recorded as a second session.
   - A few seconds of audio are lost: everything from waking until the first write is refused.
@@ -39,7 +41,7 @@ These were found or deferred during the November 2026 audit and fixes (0.3.0). N
 ## Not built (features)
 
 - An onboarding/consent screen and an "announce in chat" option (security audit M7).
-- Overlay support in fullscreen and picture-in-picture, and hiding the overlay from screen shares.
+- Overlay support in fullscreen and picture-in-picture (Meet now moves the call into its own picture-in-picture window when the tab is hidden), and hiding the overlay from screen shares.
 - Native-looking `toString` on CallScribe's page-script wrappers (security audit M4, low value).
 
 ## Test debt

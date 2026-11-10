@@ -283,10 +283,24 @@
       micRecorded: Boolean(rec && !rec.paused && rec.includeMic),
       lines: overlayLines(session),
       lastCaptionAt: session.lastCaptionAt,
+      pageLinkDead: pageLinkDead(),
       // Meet takes a caption language from us; Slack's is set in Slack.
       captionLanguage: stream ? { code: captionLanguage(), options: CS.CAPTION_LANGUAGES } : null,
       captionHint: stream ? null : SLACK_LANGUAGE_HINT,
     }
+  }
+  // The MAIN-world scripts (audio, Meet's caption feed) never answered on the private channel:
+  // nothing but on-page captions can be recorded in this tab until it is reloaded. Seen live once
+  // (2026-11-10) without a known cause; a reload of the tab fixes it.
+  const PAGE_LINK_GRACE_MS = 5000
+  let pageLinkWarned = false
+  function pageLinkDead() {
+    if (!bridge || !session || Date.now() - session.startedAt < PAGE_LINK_GRACE_MS || bridge.connected()) return false
+    if (!pageLinkWarned) {
+      pageLinkWarned = true
+      console.warn("[CallScribe] the page scripts never answered: no audio or caption feed in this tab until it is reloaded")
+    }
+    return true
   }
   const SLACK_LANGUAGE_HINT = "Caption language: change it in Slack's huddle caption settings"
   async function setCaptionLanguage(code) {

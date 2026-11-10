@@ -78,6 +78,8 @@ function createContent(opts = {}) {
   const bridge = {
     send(msg) { toPage.push(JSON.parse(JSON.stringify(msg, (k, v) => (v instanceof ArrayBuffer ? { bytes: v.byteLength } : v)))); return true },
     onMessage(fn) { bridgeListeners.add(fn); return () => bridgeListeners.delete(fn) },
+    // opts.pageDead: the MAIN-world scripts never answered (the private channel is dead).
+    connected: () => !opts.pageDead,
   }
   const fromPage = (msg) => { for (const fn of [...bridgeListeners]) fn(msg) }
 

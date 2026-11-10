@@ -684,3 +684,21 @@ test("caption language: Slack's overlay gets a hint instead of a menu", async ()
   assert.match(st.captionHint, /Slack/)
   await leave(c)
 })
+
+// ---- dead page link: the MAIN-world scripts never answered (no audio, no caption feed)
+test("dead page link: a few seconds into a call the overlay says to reload the tab", async () => {
+  const { c } = await joined({ pageDead: true })
+  assert.notEqual(c.overlays.at(-1).updates.at(-1).pageLinkDead, true, "warned before giving the page time to answer")
+  c.advance(6000)
+  await c.flush()
+  assert.equal(c.overlays.at(-1).updates.at(-1).pageLinkDead, true)
+  await leave(c)
+})
+
+test("dead page link: no warning when the page scripts answer", async () => {
+  const { c } = await joined()
+  c.advance(6000)
+  await c.flush()
+  assert.notEqual(c.overlays.at(-1).updates.at(-1).pageLinkDead, true)
+  await leave(c)
+})

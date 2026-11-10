@@ -276,3 +276,11 @@ test("overlayModel passes the caption language menu and the Slack hint through",
   assert.equal(none.language, null)
   assert.equal(none.languageHint, null)
 })
+
+test("dead page link: the pill shows the reload warning instead of captions, and the dot warns", () => {
+  const m = overlayModel(state({ pageLinkDead: true, lines: [{ speaker: "A", text: "hello", start: T0, end: T0 }] }), T0 + 1000)
+  assert.equal(m.alert, "Audio isn't recording in this tab. Reload the tab")
+  assert.equal(m.dotWarn, true)
+  assert.deepEqual(m.status[0], { label: "Recording", value: "audio broken: reload this tab", level: "warn" })
+  assert.equal(overlayModel(state({}), T0 + 1000).alert, null)
+})
