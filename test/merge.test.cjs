@@ -117,3 +117,44 @@ test("CaptionTracker.view does not clear dirty; row on screen is live, gone row 
   t = 2000; tr.update([])
   assert.deepEqual(tr.view().map((e) => e.live), [false])
 })
+
+// ---- front-trimmed long rows whose new first words also occur earlier (live Meet, 2026-11-10)
+test("real Meet front trim: an exact tail of the row is not appended again, even though its first words repeat", () => {
+  const { before, after } = require("./fixtures/meet-row-trim.json")
+  assert.ok(before.endsWith(after), "fixture: after is a tail of before")
+  assert.equal(mergeText(before, after), before)
+  // ...and the row keeps growing from there without copies
+  const grown = after + " Thanks, both of you."
+  assert.equal(mergeText(before, grown), before + " Thanks, both of you.")
+})
+
+test("front trim starting at a repeated filler run anchors where the rest lines up", () => {
+  const held = "Yeah. Yeah. Yeah. Yeah. So the runner has a queue with one worker. Yeah. Yeah. Yeah. Yeah. We add workers and each takes a county"
+  // Meet dropped the first sentence; the window now starts with the first filler run
+  const trimmed = "Yeah. Yeah. Yeah. Yeah. So the runner has a queue with one worker. Yeah. Yeah. Yeah. Yeah. We add workers and each takes a county from the queue."
+  assert.equal(mergeText("Okay. " + held, trimmed), "Okay. " + trimmed)
+})
+
+test("a repeated phrase still anchors at its latest occurrence when only that one lines up", () => {
+  const prev = "I think we should go now. Later on I think we should stay"
+  const next = "I think we should stay and eat"
+  assert.equal(mergeText(prev, next), "I think we should go now. Later on I think we should stay and eat")
+})
+
+test("a long trimmed row tracked over many renderings never grows past what was said", () => {
+  // Simulate Meet: one row that keeps growing, and every so often loses its first sentences.
+  const sentences = []
+  const words = "runner queue county deed equity worker proxy report spreadsheet dashboard status layout scraper search record lead team morning".split(" ")
+  const said = (i) => [0, 1, 2, 3, 4, 5].map((k) => words[(i * 7 + k * 5) % words.length]).join(" ")
+  for (let i = 0; i < 120; i++) sentences.push(i % 5 === 0 ? "Yeah. Yeah. Yeah. Yeah." : `So the ${said(i)} part ${i}.`)
+  const tr = new CaptionTracker(() => 0)
+  const row = {}
+  let from = 0
+  for (let n = 1; n <= sentences.length; n++) {
+    if (n - from > 40) from += 15 // front trim
+    tr.update([{ key: row, speaker: "Anna", text: sentences.slice(from, n).join(" ") }])
+  }
+  const out = tr.snapshot()
+  assert.equal(out.length, 1)
+  assert.equal(out[0].text, sentences.join(" "))
+})

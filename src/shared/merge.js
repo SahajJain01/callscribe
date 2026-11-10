@@ -31,6 +31,27 @@
     return hits
   }
 
+  // Share of a's tokens from i on that b repeats in order from its start, allowing a word or two
+  // inserted, dropped or re-recognised along the way.
+  function tailAgreement(a, i, b) {
+    let x = i, y = 0, hits = 0
+    while (x < a.length && y < b.length) {
+      if (a[x] === b[y]) {
+        hits++
+        x++
+        y++
+        continue
+      }
+      let step = false
+      for (let s = 1; s <= 2 && !step; s++) {
+        if (a[x + s] === b[y]) { x += s; step = true }
+        else if (a[x] === b[y + s]) { y += s; step = true }
+      }
+      if (!step) { x++; y++ }
+    }
+    return hits / (a.length - i)
+  }
+
   // Smallest edit distance between a and any prefix of b (b may run on past a).
   function prefixDistance(a, b) {
     a = a.slice(0, 200)
@@ -115,6 +136,20 @@
       if (matchAt(pk, i, nk, w) >= (w < n ? w : need)) {
         at = i
         break
+      }
+    }
+    // That latest match can be wrong for a front-trimmed long row whose new first words also
+    // occur earlier in prev ("Yeah. Yeah. Yeah.", a phrase said twice): anchoring there copies
+    // everything after it again. A trimmed row holds all of prev's tail, so prefer the earliest
+    // match where the rest of prev lines up with next (live Meet, 2026-11-10).
+    if (at > 0) {
+      for (let i = 1; i < at; i++) {
+        if (pk.length - i > nk.length + 2) continue // prev's tail is longer than next: not a trim
+        if (matchAt(pk, i, nk, n) < need) continue
+        if (tailAgreement(pk, i, nk) >= 0.85) {
+          at = i
+          break
+        }
       }
     }
     if (at > 0) {
