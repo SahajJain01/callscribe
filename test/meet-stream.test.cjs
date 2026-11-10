@@ -123,8 +123,8 @@ test("language: Meet turning CC off is answered in the chosen language", async (
 test("language: Meet re-asking repeatedly still respects the retry limit", () => {
   const { msg, requests } = withLanguage("vi-VN")
   for (let i = 0; i < 20; i++) msg("out", P.encodeLanguage(10 + i, "en-US").buffer)
-  // one answer per Meet request at most, and never unbounded
-  assert.ok(requests().length <= 21, String(requests().length))
+  // exactly one answer per Meet request
+  assert.equal(requests().length, 21)
 })
 
 test("language: a code Meet never answers stops blocking Meet's own captions once retries run out", () => {
@@ -145,4 +145,14 @@ test("language: a code Meet never answers stops blocking Meet's own captions onc
   } finally {
     Date.now = realNow
   }
+})
+
+test("M2: Meet asking for our language mid-switch ends the switch, even if our reply never comes", () => {
+  const { st, msg, got, set } = withLanguage("vi-VN")
+  set("ja-JP")
+  st.languageChanged() // our ja-JP request is pending
+  msg("out", P.encodeLanguage(4, "ja-JP").buffer) // Meet's CC asks for ja-JP too; our reply is lost
+  msg("in", reply(4))
+  msg("in", tagged(1, 1, "mixed-language line", "en-US", true))
+  assert.deepEqual(got, ["mixed-language line"])
 })

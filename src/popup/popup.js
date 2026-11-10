@@ -135,7 +135,11 @@ async function settingsUi() {
   const CS = globalThis.CallScribe
   const sel = document.getElementById("lang")
   for (const [code, name] of CS.CAPTION_LANGUAGES) sel.append(new Option(name, code))
-  sel.value = CS.resolveCaptionLanguage(settings.captionLang, [...(navigator.languages || [navigator.language])])
+  const langs = navigator.languages && navigator.languages.length ? [...navigator.languages] : [navigator.language]
+  const code = CS.resolveCaptionLanguage(settings.captionLang, langs)
+  // A browser code outside the list (sent as-is) is shown as itself.
+  if (!CS.isCaptionLanguage(code)) sel.prepend(new Option(code, code))
+  sel.value = code
   sel.addEventListener("change", async () => {
     const cur = (await chrome.storage.local.get("settings")).settings || {}
     cur.captionLang = sel.value

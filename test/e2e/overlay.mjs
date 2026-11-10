@@ -270,10 +270,36 @@ try {
     await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }, sessionId)
     const kept = await ev(`(() => { window.__ov.update(window.__state(window.__lines)); window.__ov.update(window.__state(window.__lines)); return __shadow.querySelector(".st select") === window.__sel })()`)
     check(kept, "overlay refreshes keep the same menu element (an open dropdown isn't torn down)")
+    // I1: while the menu is in use, refreshes that change the status (a new line) leave it alone.
+    await ev(`(() => { window.__sel.focus(); return true })()`)
+    const busy = await ev(`(() => {
+      for (let i = 0; i < 3; i++) {
+        window.__lines = window.__lines.concat({ speaker: "Alice", text: "status change " + i, start: Date.now(), end: Date.now(), live: false })
+        window.__ov.update(window.__state(window.__lines))
+      }
+      return { same: __shadow.querySelector(".st select") === window.__sel, connected: window.__sel.isConnected, focused: __shadow.activeElement === window.__sel }
+    })()`)
+    check(busy.same && busy.connected && busy.focused, `status changes while the menu is open don't detach or unfocus it (${JSON.stringify(busy)})`)
     const picked = await ev(`(() => { window.__sel.value = "ja-JP"; window.__sel.dispatchEvent(new Event("change", { bubbles: true })); return window.__picked })()`)
     check(picked === "ja-JP", `choosing a language calls onCaptionLanguage (${picked})`)
+    // I2: after choosing, keyboard focus leaves the overlay (Meet's Space-to-unmute keeps working).
+    const after2 = await ev(`({ shadowFocus: Boolean(__shadow.activeElement), active: document.activeElement && document.activeElement.id })`)
+    check(!after2.shadowFocus && after2.active !== "callscribe-overlay", `choosing a language gives focus back to the page (${JSON.stringify(after2)})`)
+    await ev(`(() => { window.__sel.focus(); return true })()`)
+    await send("Input.dispatchKeyEvent", { type: "keyDown", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }, sessionId)
+    await send("Input.dispatchKeyEvent", { type: "keyUp", key: "Escape", code: "Escape", windowsVirtualKeyCode: 27 }, sessionId)
+    check(!(await ev(`Boolean(__shadow.activeElement)`)), "Escape on the menu gives focus back to the page")
+    const stale = await ev(`(() => { const st = __shadow.querySelector(".st").textContent; return st.includes(String(window.__lines.length)) })()`)
+    check(stale, "the status row catches up once the menu is no longer in use")
     await shot("language-meet.png")
   }
+  const odd = await ev(`(() => {
+    const base = window.__state
+    window.__ov.update({ ...base(window.__lines), captionLanguage: { code: "zh-TW", options: base(window.__lines).captionLanguage.options } })
+    const s = __shadow.querySelector(".st select")
+    return s && { value: s.value, label: s.options[s.selectedIndex] && s.options[s.selectedIndex].textContent }
+  })()`)
+  check(odd && odd.value === "zh-TW" && odd.label === "zh-TW", `a browser code outside the list is shown, not a blank menu (${JSON.stringify(odd)})`)
   await ev(`(() => {
     const base = window.__state
     window.__state = (ls) => ({ ...base(ls), platform: "slack-huddle", source: "cc", captionLanguage: null, captionHint: "Caption language: change it in Slack's huddle caption settings" })

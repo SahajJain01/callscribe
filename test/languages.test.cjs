@@ -21,10 +21,19 @@ test("browser languages are walked in order; nothing usable means en-US", () => 
   assert.equal(resolveCaptionLanguage(undefined, ["", null, "xx"]), "en-US")
 })
 
-test("Chinese browser tags map to Meet's cmn codes", () => {
-  assert.equal(resolveCaptionLanguage(undefined, ["zh-TW"]), "cmn-Hant-TW")
-  assert.equal(resolveCaptionLanguage(undefined, ["zh"]), "cmn-Hans-CN")
-  assert.equal(resolveCaptionLanguage(undefined, ["zh-CN"]), "cmn-Hans-CN")
+test("I3: less certain codes are never picked on the browser's say-so; 0.3.0's behaviour is kept for them", () => {
+  // A browser tag that is exactly a listed code was already sent as-is by 0.3.0.
+  assert.equal(resolveCaptionLanguage(undefined, ["he-IL"]), "he-IL")
+  // Primary-subtag mapping only into well-known codes: these went to en-US before and still do.
+  assert.equal(resolveCaptionLanguage(undefined, ["he"]), "en-US")
+  assert.equal(resolveCaptionLanguage(undefined, ["nb"]), "en-US")
+  assert.equal(resolveCaptionLanguage(undefined, ["km"]), "en-US")
+  assert.equal(resolveCaptionLanguage(undefined, ["zh"]), "en-US")
+  // An xx-YY tag not in the list is sent as-is, as 0.3.0 did.
+  assert.equal(resolveCaptionLanguage(undefined, ["zh-TW"]), "zh-TW")
+  assert.equal(resolveCaptionLanguage(undefined, ["sw-KE"]), "sw-KE")
+  // Still walks past tags it can't use.
+  assert.equal(resolveCaptionLanguage(undefined, ["km", "vi"]), "vi-VN")
 })
 
 test("a saved choice wins; a saved code not in the list is ignored", () => {

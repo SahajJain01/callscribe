@@ -50,14 +50,18 @@
     ["el-GR", "Ελληνικά"],
   ]
 
+  // Codes a browser language may be mapped onto by its main language alone ("vi" -> "vi-VN"):
+  // the plain xx-YY ones Google speech is known to use. The rest are offered in the menu, but
+  // reached from the browser only by an exact tag, as 0.3.0 did (review I3).
+  const MAPPABLE = new Set(["en-US", "en-GB", "en-AU", "en-IN", "vi-VN", "es-MX", "es-ES", "pt-BR", "pt-PT", "fr-FR",
+    "de-DE", "it-IT", "nl-NL", "pl-PL", "ru-RU", "uk-UA", "tr-TR", "hi-IN", "id-ID", "th-TH", "ja-JP", "ko-KR",
+    "sv-SE", "da-DK", "fi-FI", "cs-CZ", "ro-RO", "hu-HU", "el-GR"])
+  // 0.3.0 sent a browser tag of this form as-is.
+  const PLAIN_TAG = /^[a-z]{2,3}-[A-Z]{2}$/
+
   const lower = (s) => String(s || "").toLowerCase()
   const byCode = new Map(CAPTION_LANGUAGES.map(([c]) => [lower(c), c]))
-  // Browser tags for Chinese say zh-*; Meet says cmn-Hans/cmn-Hant.
-  const ZH = { "zh-tw": "cmn-Hant-TW", "zh-hk": "cmn-Hant-TW", "zh-hant": "cmn-Hant-TW", "zh-hant-tw": "cmn-Hant-TW" }
-  const primary = (tag) => {
-    const p = lower(tag).split("-")[0]
-    return p === "zh" ? "cmn" : p === "nb" || p === "nn" ? "no" : p
-  }
+  const primary = (tag) => lower(tag).split("-")[0]
 
   const isCaptionLanguage = (code) => typeof code === "string" && byCode.get(lower(code)) === code
 
@@ -65,10 +69,10 @@
     const t = lower(tag)
     if (!t) return null
     if (byCode.has(t)) return byCode.get(t)
-    if (ZH[t]) return ZH[t]
     const p = primary(t)
-    const hit = CAPTION_LANGUAGES.find(([c]) => primary(c) === p)
-    return hit ? hit[0] : null
+    const hit = CAPTION_LANGUAGES.find(([c]) => MAPPABLE.has(c) && primary(c) === p)
+    if (hit) return hit[0]
+    return PLAIN_TAG.test(String(tag)) ? String(tag) : null
   }
 
   /** The caption language to ask Meet for: the saved choice, else the browser's, else en-US. */

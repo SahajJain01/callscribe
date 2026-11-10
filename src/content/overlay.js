@@ -230,20 +230,33 @@
     let langSlot = null
     let langKey = ""
     for (const type of ["pointerdown", "pointerup", "click"]) langSel.addEventListener(type, (e) => e.stopPropagation())
+    // The menu takes keyboard focus only while it's used: a choice, Escape, Enter or Tab hands
+    // it back to the page (Meet's Space-to-unmute, and no arrow key changes the language).
     langSel.addEventListener("change", (e) => {
       e.stopPropagation()
       if (opts.onCaptionLanguage) opts.onCaptionLanguage(langSel.value)
+      langSel.blur()
+    })
+    langSel.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" || e.key === "Enter" || e.key === "Tab") langSel.blur()
+    })
+    // Catch up on status changes held back while the menu was in use.
+    langSel.addEventListener("blur", () => {
+      if (!removed && last) win.setTimeout(() => !removed && last && render(last), 0)
     })
     function syncLanguage(lang) {
       if (!lang) {
         if (langSel.parentNode) langSel.remove()
         return
       }
-      const key = lang.options.map((o) => o[0]).join(",")
+      // A browser code outside the list (sent as-is, as 0.3.0 did) is shown as itself.
+      const listed = lang.options.some((o) => o[0] === lang.code)
+      const options = listed ? lang.options : [[lang.code, lang.code], ...lang.options]
+      const key = options.map((o) => o[0]).join(",")
       if (langKey !== key) {
         langKey = key
         langSel.textContent = ""
-        for (const [code, name] of lang.options) {
+        for (const [code, name] of options) {
           const o = doc.createElement("option")
           o.value = code
           o.textContent = name
@@ -407,7 +420,9 @@
       attr("data-latest", latest ? latest.text : "")
 
       const stKey = JSON.stringify([m.status, m.captionToggle, m.languageHint])
-      if (seen.st !== stKey) {
+      // While the language menu is in use, leave the row alone: moving the menu would close it.
+      const choosing = shadow.activeElement === langSel
+      if (seen.st !== stKey && !choosing) {
         seen.st = stKey
         // The language menu lives on across status rebuilds, so an open dropdown survives a refresh.
         if (langSel.parentNode) langSel.remove()

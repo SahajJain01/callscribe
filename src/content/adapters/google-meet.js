@@ -144,6 +144,7 @@
               epoch++
               if (sameLang(d.lang, wanted())) {
                 flowing = true
+                switching = false // the live subscription is in our language now (review M2)
               } else {
                 // Meet's CC wants another language: ours wins, ask again.
                 switching = true
