@@ -44,8 +44,8 @@
   const ORPHAN_TEXT = "CallScribe was updated. Reload this tab to keep recording"
   const RETRY_MS = [500, 1000, 2000, 4000, 8000] // then give up on that write (~15 s)
 
-  let settings = { recordAudio: true, includeMic: true, autoCaptions: true, hideCaptions: true, showOverlay: true }
-  // { id, tracker, utterances, startedAt, callStartedAt, lastInCall, captionsTried, savedAt, audio, lastCaptionAt,
+  let settings = { recordAudio: true, includeMic: true, autoCaptions: true, showOverlay: true }
+  // { id, tracker, utterances, startedAt, callStartedAt, lastInCall, ccPressedAt, savedAt, audio, lastCaptionAt,
   //   rec: { paused, includeMic, acked } | null, stored (last transcript the worker stored), skip (lines an earlier session of the call stored) }
   let session = null
   let readTimer = 0
@@ -235,6 +235,7 @@
   const captionsOn = () => streamActive() || adapter.captionsOn()
   // Give the feed this long to start before falling back to turning CC on.
   const STREAM_GRACE_MS = 8000
+  const CC_RETRY_MS = 5000
   if (stream) toPage({ type: "dc-hello" })
 
   function onSettings(next) {
@@ -244,7 +245,6 @@
     if (next && !("captionLang" in next)) delete settings.captionLang
     if (orphaned) return
     if (stream && stream.languageChanged && captionLanguage() !== lang) stream.languageChanged()
-    applyHide()
     reconcileRecorder()
     syncOverlay()
   }
@@ -283,8 +283,6 @@
       micRecorded: Boolean(rec && !rec.paused && rec.includeMic),
       lines: overlayLines(session),
       lastCaptionAt: session.lastCaptionAt,
-      canHideCaptions: Boolean(adapter.captionContainer),
-      captionsHidden: settings.hideCaptions !== false,
       // Meet takes a caption language from us; Slack's is set in Slack.
       captionLanguage: stream ? { code: captionLanguage(), options: CS.CAPTION_LANGUAGES } : null,
       captionHint: stream ? null : SLACK_LANGUAGE_HINT,
@@ -300,15 +298,6 @@
       console.debug("[CallScribe] caption language change failed", e)
     }
   }
-  // The overlay's Hide/Show button flips the same setting as the popup's "Hide captions on screen".
-  async function setCaptionsHidden(hide) {
-    try {
-      const cur = (await chrome.storage.local.get("settings")).settings || {}
-      await chrome.storage.local.set({ settings: { ...cur, hideCaptions: hide } })
-    } catch (e) {
-      console.debug("[CallScribe] overlay caption toggle failed", e)
-    }
-  }
   function removeOverlay() {
     if (overlay) overlay.remove()
     overlay = null
@@ -321,7 +310,7 @@
       if (orphaned) return
       if (!session) linesMemo = null
       if (!session || settings.showOverlay === false) return removeOverlay()
-      if (!overlay) overlay = CS.createOverlay({ doc: document, storage: chrome.storage.local, onToggleCaptions: setCaptionsHidden, onCaptionLanguage: setCaptionLanguage })
+      if (!overlay) overlay = CS.createOverlay({ doc: document, storage: chrome.storage.local, onCaptionLanguage: setCaptionLanguage })
       overlay.update(overlayState())
     } catch (e) {
       console.debug("[CallScribe] overlay sync failed", e)
@@ -335,7 +324,7 @@
         inCall = adapter.inCall()
       } catch {}
       if (!inCall) return removeOverlay()
-      if (!overlay) overlay = CS.createOverlay({ doc: document, storage: null, onToggleCaptions: null })
+      if (!overlay) overlay = CS.createOverlay({ doc: document, storage: null })
       overlay.update({ orphan: ORPHAN_TEXT })
     } catch (e) {
       console.debug("[CallScribe] overlay warning failed", e)
@@ -348,29 +337,6 @@
       overlayTimer = 0
       syncOverlay()
     }, 250)
-  }
-
-  // Hidden captions: keep the caption box rendering (we read it) but move it off-screen.
-  function applyHide() {
-    reclaimSpace()
-    const id = "callscribe-hide-captions"
-    let el = document.getElementById(id)
-    const sel = adapter.captionContainer
-    if (!settings.hideCaptions || !sel) return el && el.remove()
-    if (el) return
-    el = document.createElement("style")
-    el.id = id
-    el.textContent = `${sel} { position: fixed !important; left: -100000px !important; top: 0 !important; width: 800px !important; opacity: 0 !important; pointer-events: none !important; }`
-    ;(document.head || document.documentElement).appendChild(el)
-  }
-
-  // Some apps keep layout space reserved for captions even when the box is moved away.
-  function reclaimSpace() {
-    try {
-      adapter.reclaimCaptionSpace && adapter.reclaimCaptionSpace(settings.hideCaptions)
-    } catch (e) {
-      console.debug("[CallScribe] reclaim caption space failed", e)
-    }
   }
 
   // Bring this session's recorder in line with the current settings.
@@ -421,7 +387,7 @@
     const now = Date.now()
     session = {
       id, tracker: prev ? prev.tracker : new CS.CaptionTracker(), utterances: prev ? prev.utterances : new CS.UtteranceTracker(),
-      startedAt: now, callStartedAt: prev ? prev.callStartedAt : now, lastInCall: prev ? prev.lastInCall : now, captionsTried: prev ? prev.captionsTried : 0, savedAt: 0,
+      startedAt: now, callStartedAt: prev ? prev.callStartedAt : now, lastInCall: prev ? prev.lastInCall : now, ccPressedAt: prev ? prev.ccPressedAt : 0, savedAt: 0,
       audio: "off", lastCaptionAt: prev ? prev.lastCaptionAt : 0, rec: null, rev: 0, audioSaveFailed: false, transcriptSaveFailed: false, closed: false,
       stored: null, storedRev: 0, skip: prev ? new Set([...(prev.skip || []), ...(prev.stored || []).map(lineKey)]) : null,
     }
@@ -518,18 +484,6 @@
     toPage({ type: "stop", id: s.id })
   }
 
-  // Undo what CallScribe did to the page's look: the hidden-captions style and the tile
-  // translate/scale rules (the call app's own captions and layout come back).
-  function restorePage() {
-    try {
-      const el = document.getElementById("callscribe-hide-captions")
-      if (el) el.remove()
-      if (adapter.reclaimCaptionSpace) adapter.reclaimCaptionSpace(false)
-    } catch (e) {
-      console.debug("[CallScribe] restoring the page failed", e)
-    }
-  }
-
   // The extension was updated or reloaded under us: stop everything in the page, warn.
   function becomeOrphan() {
     if (orphaned) return
@@ -544,7 +498,6 @@
     } catch (e) {
       console.debug("[CallScribe] orphan cleanup failed", e)
     }
-    restorePage()
     syncOrphanOverlay()
   }
 
@@ -675,11 +628,13 @@
       } catch {}
     }
 
-    // Fallback: show captions so the page can be read, if the caption feed hasn't started.
-    if (settings.autoCaptions && adapter.enableCaptions && !captionsOn() && session.captionsTried < 3) {
-      const since = Date.now() - session.startedAt
-      if (since > (stream ? STREAM_GRACE_MS : 1000) + session.captionsTried * 5000) {
-        session.captionsTried++
+    // CC fallback: if the caption feed isn't running, turn CC on and read it off the page.
+    // Pressed again every few seconds for as long as CC is off (the user turned it off, the
+    // button wasn't there yet); nothing on the page is hidden or moved.
+    if (settings.autoCaptions && adapter.enableCaptions && !captionsOn()) {
+      const now = Date.now()
+      if (now - session.startedAt > (stream ? STREAM_GRACE_MS : 1000) && now - session.ccPressedAt >= CC_RETRY_MS) {
+        session.ccPressedAt = now
         adapter.enableCaptions()
       }
     }
@@ -687,7 +642,6 @@
     // polls them as the fallback, but not while the caption feed is healthy (CC is off then).
     observe()
     if (!streamActive()) readCaptions(false)
-    reclaimSpace()
     if (session && Date.now() - session.savedAt >= SAVE_EVERY_MS) save(session, false)
     // Every second regardless of dirty: the elapsed time ticks and live lines turn final.
     syncOverlay()

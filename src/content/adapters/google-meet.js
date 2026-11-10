@@ -16,18 +16,6 @@
     )
   }
 
-  // Height of the band Meet sets aside for captions: the tallest box around the caption region,
-  // stopping at the full-page layout. Moving the region off-screen doesn't shrink this band.
-  function captionBandHeight(region) {
-    let band = 0
-    for (let e = region.parentElement; e && e !== document.body; e = e.parentElement) {
-      const h = e.getBoundingClientRect().height
-      if (h >= innerHeight * 0.6) break
-      band = Math.max(band, h)
-    }
-    return band
-  }
-
   function micButton() {
     for (const b of document.querySelectorAll("button[data-is-muted]")) {
       for (const i of b.querySelectorAll(".google-symbols, .material-icons-extended, i")) if (/^mic(_off|_none)?$/.test(i.textContent.trim())) return b
@@ -268,76 +256,23 @@
       return Boolean(captionRegion())
     },
 
+    // CC on. Meet's call bar has a "Captions and translation" tray (2026-11) holding "Turn on
+    // captions"; older bars have that button directly. Last resort: Meet's "c" shortcut.
     enableCaptions() {
-      const btn =
-        document.querySelector('button[aria-label^="Turn on captions"]') ||
-        icon("closed_caption_off")?.closest("button")
-      if (btn) btn.click()
-      else document.dispatchEvent(new KeyboardEvent("keydown", { key: "c", code: "KeyC", bubbles: true }))
-    },
-
-    // While captions are on, Meet shrinks the video grid by a fixed caption band (the bottom of its
-    // inline `inset`) and lays tiles out for that smaller box. It never re-measures, so hiding the
-    // caption box leaves an empty gap. When hidden, scale and centre the tiles into the grid plus
-    // the band. Only tiles are moved; the grid's other children are left alone.
-    // Meet owns the tiles' `transform` (animations, layouts): we never write it. Our move uses the
-    // separate `translate` and `scale` properties, which the browser applies on top of the tile's
-    // own transform, so a host transform is kept and scaled with the tile (runtime I5). A grid
-    // whose tiles already use `translate`/`scale` themselves is left alone.
-    reclaimCaptionSpace(hidden) {
-      const ATTR = "data-callscribe-tile"
-      const region = hidden ? captionRegion() : null
-      const band = region ? captionBandHeight(region) : 0
-      const want = new Map()
-      const r = (n) => Math.round(n * 100) / 100
-      const hostMoves = (k) => {
-        if (k.hasAttribute(ATTR)) return false // ours
-        const cs = getComputedStyle(k)
-        return (cs.translate && cs.translate !== "none") || (cs.scale && cs.scale !== "none")
+      const turnOn = () => document.querySelector('button[aria-label^="Turn on captions"]') || icon("closed_caption_off")?.closest("button")
+      const direct = turnOn()
+      if (direct) return direct.click()
+      const tray = document.querySelector('button[aria-label="Captions and translation"]') || icon("translate_cc")?.closest("button")
+      if (!tray) return document.dispatchEvent(new KeyboardEvent("keydown", { key: "c", code: "KeyC", bubbles: true }))
+      tray.click()
+      // The tray's content loads lazily (about 2 s the first time): wait for the button.
+      let tries = 0
+      const press = () => {
+        const btn = turnOn()
+        if (btn) btn.click()
+        else if (++tries < 20) setTimeout(press, 250)
       }
-      if (band) {
-        for (const g of document.querySelectorAll('[style*="inset"]')) {
-          if (!g.querySelector("[data-participant-id]")) continue
-          // offset* ignore transforms, so this is Meet's own layout even after we've moved tiles.
-          const tiles = [...g.children].filter(
-            (k) => k.offsetWidth && k.offsetHeight && (k.matches("[data-participant-id]") || k.querySelector("[data-participant-id]")),
-          )
-          if (!tiles.length || tiles.some(hostMoves)) continue
-          const x0 = Math.min(...tiles.map((k) => k.offsetLeft))
-          const y0 = Math.min(...tiles.map((k) => k.offsetTop))
-          const bw = Math.max(...tiles.map((k) => k.offsetLeft + k.offsetWidth)) - x0
-          const bh = Math.max(...tiles.map((k) => k.offsetTop + k.offsetHeight)) - y0
-          const W = g.offsetWidth
-          const H = g.offsetHeight + band
-          const s = Math.max(1, Math.min(W / bw, H / bh))
-          // Every tile point p (as Meet draws it, own transform included) goes to s * p + (tx, ty).
-          const tx = (W - s * bw) / 2 - s * x0
-          const ty = (H - s * bh) / 2 - s * y0
-          for (const k of tiles) {
-            // `scale` works about the tile's transform-origin O, so translate by T + (s - 1) * O.
-            const [ox, oy] = getComputedStyle(k).transformOrigin.split(" ").map(parseFloat)
-            const dx = tx + (s - 1) * (k.offsetLeft + (ox || 0))
-            const dy = ty + (s - 1) * (k.offsetTop + (oy || 0))
-            want.set(k, `translate: ${r(dx)}px ${r(dy)}px !important; scale: ${Math.round(s * 1000) / 1000} !important;`)
-          }
-        }
-      }
-      for (const k of document.querySelectorAll(`[${ATTR}]`)) if (!want.has(k)) k.removeAttribute(ATTR)
-      const rules = []
-      let i = 0
-      for (const [k, t] of want) {
-        if (k.getAttribute(ATTR) !== String(i)) k.setAttribute(ATTR, String(i))
-        rules.push(`[${ATTR}="${i++}"] { ${t} }`)
-      }
-      const css = rules.join("\n")
-      let sheet = document.getElementById("callscribe-caption-space")
-      if (!css) return sheet && sheet.remove()
-      if (!sheet) {
-        sheet = document.createElement("style")
-        sheet.id = "callscribe-caption-space"
-        ;(document.head || document.documentElement).appendChild(sheet)
-      }
-      if (sheet.textContent !== css) sheet.textContent = css
+      setTimeout(press, 250)
     },
 
     captionRows() {

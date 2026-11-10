@@ -108,7 +108,7 @@ async function scenario(mode) {
       const tx = d.transaction(["sessions", "chunks"], "readwrite")
       for (const r of ${JSON.stringify(v1Rows)}) tx.objectStore("sessions").put(r)
       tx.objectStore("chunks").put({ session: "slack-huddle-v1-unsav1", seq: 0, bytes: new Uint8Array(3000).fill(5), mime: "audio/webm;codecs=opus" })
-      tx.oncomplete = () => { d.close(); chrome.storage.local.set({ settings: { recordAudio: true, includeMic: true, autoCaptions: true, hideCaptions: true, showOverlay: true, autoDownload: ${mode === "on"}, folder: "CallScribe" } }).then(() => done(d.version)) }
+      tx.oncomplete = () => { d.close(); chrome.storage.local.set({ settings: { recordAudio: true, includeMic: true, autoCaptions: true, showOverlay: true, autoDownload: ${mode === "on"}, folder: "CallScribe" } }).then(() => done(d.version)) }
       tx.onerror = () => done("ERR " + tx.error)
     }
     q.onerror = () => done("ERR " + q.error)

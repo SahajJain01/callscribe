@@ -590,20 +590,47 @@ test("the page answers 'stop' synchronously (recorder never started): session-en
   assert.equal(c.ofType(c.sent, "session-end").length, 1)
 })
 
-// ---- final review M-C: orphaning gives Meet its own captions and layout back
-test("orphaned: the hidden-captions style is removed and the tile space is given back (M-C)", async () => {
-  const reclaim = []
-  const { c } = await joined({ settings: { hideCaptions: true }, adapter: { captionContainer: ".captions", reclaimCaptionSpace: (h) => reclaim.push(h) } })
-  assert.ok(c.doc.getElementById("callscribe-hide-captions"), "control: captions hidden while recording")
-  assert.equal(reclaim.at(-1), true)
-  c.runtime.id = undefined
-  c.advance(1000)
+// ---- CC fallback: just force CC on and read it; nothing on the page is hidden or moved
+test("CC fallback: captions are never hidden or moved, whatever an old hideCaptions setting says", async () => {
+  const { c } = await joined({ settings: { hideCaptions: true }, adapter: { captionContainer: ".captions" } })
+  c.advance(3000)
   await c.flush()
-  assert.equal(c.doc.getElementById("callscribe-hide-captions"), null, "captions still hidden after the extension was updated")
-  assert.equal(reclaim.at(-1), false, "tile translate/scale rules left in place")
-  const n = reclaim.length
-  c.advance(5000)
-  assert.equal(reclaim.length, n, "still adjusting the page after orphaning")
+  assert.equal(c.doc.getElementById("callscribe-hide-captions"), null, "captions hidden")
+  assert.equal(c.doc.getElementById("callscribe-caption-space"), null, "tiles moved")
+  assert.equal(c.overlays.at(-1).updates.at(-1).captionsHidden, undefined)
+  assert.equal(c.overlays.at(-1).opts.onToggleCaptions, undefined)
+  await leave(c)
+})
+
+test("CC fallback: CC keeps being turned on while the feed is down, not just three times", async () => {
+  let clicks = 0
+  const adapter = {
+    id: "google-meet",
+    enableCaptions: () => clicks++,
+    createCaptionStream: () => ({ handle() {}, start() {}, stop() {}, tick() {}, active: () => false, languageChanged() {} }),
+  }
+  const { c } = await joined({ adapter, settings: { autoCaptions: true } })
+  for (let i = 0; i < 60; i++) c.advance(1000)
+  await c.flush()
+  assert.ok(clicks >= 6, `CC turned on ${clicks} times in a minute`)
+  assert.ok(clicks <= 12, `CC turned on ${clicks} times in a minute (too often)`)
+  await leave(c)
+})
+
+test("CC fallback: once CC is on, it isn't pressed again", async () => {
+  let clicks = 0
+  const state = { on: false }
+  const adapter = {
+    id: "google-meet",
+    captionsOn: () => state.on,
+    enableCaptions: () => { clicks++; state.on = true },
+    createCaptionStream: () => ({ handle() {}, start() {}, stop() {}, tick() {}, active: () => false, languageChanged() {} }),
+  }
+  const { c } = await joined({ adapter, settings: { autoCaptions: true } })
+  for (let i = 0; i < 60; i++) c.advance(1000)
+  await c.flush()
+  assert.equal(clicks, 1)
+  await leave(c)
 })
 
 // --- caption language (docs/superpowers/specs/2026-11-10-caption-language-design.md)
@@ -626,7 +653,7 @@ test("caption language: the stream asks for the saved choice, else the browser's
   await c.setSettings({ captionLang: "ja-JP" })
   assert.equal(calls.opts.language(), "ja-JP")
   assert.equal(calls.changed, 1)
-  await c.setSettings({ hideCaptions: true })
+  await c.setSettings({ includeMic: false })
   assert.equal(calls.changed, 1, "a setting that doesn't change the language re-asked")
   await leave(c)
 })

@@ -14,7 +14,7 @@ fs.mkdirSync(outDir, { recursive: true })
 
 const shim = `{
   runtime: { sendMessage(m) { (window.__csMsgs = window.__csMsgs || []).push(m); return Promise.resolve({ ok: true }) }, onMessage: { addListener() {} } },
-  storage: { local: { get: () => Promise.resolve({ settings: { recordAudio: true, includeMic: true, autoCaptions: true, hideCaptions: true } }) }, onChanged: { addListener() {} } },
+  storage: { local: { get: () => Promise.resolve({ settings: { recordAudio: true, includeMic: true, autoCaptions: true } }) }, onChanged: { addListener() {} } },
 }`
 const isolated = `(function (chrome) {\n${read("src/shared/merge.js")}\n${read("src/shared/meet-proto.js")}\n${read("src/content/adapters/google-meet.js")}\n${read("src/content/main.js")}\n})(${shim})`
 

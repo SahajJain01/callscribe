@@ -158,3 +158,29 @@ test("Task 3 review I3: camera tile 'Bob (Acme)' and presentation tile 'Bob (Acm
   body.children.reverse()
   assert.deepEqual(meet.participantNames(), [["spaces/s/devices/6", "Bob (Acme)"]])
 })
+
+// Meet's 2026-11 call bar: CC lives in a "Captions and translation" tray (seen live 2026-11-10).
+test("Meet: enableCaptions opens the Captions and translation tray and presses Turn on captions", async () => {
+  const pressed = []
+  const body = new El("body")
+  const turnOn = new El("button", { attrs: { "aria-label": "Turn on captions" }, text: "closed_caption_offTurn on captions" })
+  turnOn.click = () => pressed.push("turn on")
+  const tray = new El("button", { attrs: { "aria-label": "Captions and translation" }, text: "translate_cc" })
+  // Like live Meet: the tray's buttons show up about 2 s after it opens.
+  tray.click = () => { pressed.push("tray"); setTimeout(() => body.append(turnOn), 2000) }
+  body.append(tray)
+  useDocument(body)
+  meet.enableCaptions()
+  await new Promise((r) => setTimeout(r, 2800))
+  assert.deepEqual(pressed, ["tray", "turn on"])
+})
+
+test("Meet: enableCaptions presses a visible Turn on captions button directly (older call bar)", async () => {
+  const pressed = []
+  const turnOn = new El("button", { attrs: { "aria-label": "Turn on captions (c)" } })
+  turnOn.click = () => pressed.push("turn on")
+  useDocument(new El("body", { kids: [turnOn] }))
+  meet.enableCaptions()
+  await new Promise((r) => setTimeout(r, 600))
+  assert.deepEqual(pressed, ["turn on"])
+})

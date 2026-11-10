@@ -84,7 +84,7 @@ function createContent(opts = {}) {
   // --- chrome.*
   const sent = []
   const storageListeners = []
-  const store = { settings: { recordAudio: true, includeMic: true, autoCaptions: false, hideCaptions: false, showOverlay: true, ...(opts.settings || {}) } }
+  const store = { settings: { recordAudio: true, includeMic: true, autoCaptions: false, showOverlay: true, ...(opts.settings || {}) } }
   const runtime = {
     id: "extid",
     reply: opts.reply,

@@ -62,7 +62,7 @@
   // The pill then carries only that warning.
   function overlayModel(state, now) {
     if (state.orphan) {
-      return { orphan: String(state.orphan), elapsed: "", latest: null, warn: true, dotWarn: true, status: [], captionToggle: null, language: null, languageHint: null }
+      return { orphan: String(state.orphan), elapsed: "", latest: null, warn: true, dotWarn: true, status: [], language: null, languageHint: null }
     }
     const startedAt = state.startedAt || now
     const lines = state.lines || []
@@ -84,8 +84,6 @@
       warn,
       dotWarn: warn || audio.level === "warn" || transcriptFailed,
       status,
-      // Captions read off the page (CC): offer the "Hide captions on screen" setting right here.
-      captionToggle: state.source === "cc" && state.canHideCaptions ? { hidden: !!state.captionsHidden } : null,
       // Meet: the caption language menu. Slack: where to change it in Slack.
       language: state.captionLanguage && state.captionLanguage.code ? state.captionLanguage : null,
       languageHint: state.captionHint || null,
@@ -162,9 +160,6 @@
 .st { display: flex; gap: 4px 10px; flex-wrap: wrap; padding: 0 11px 7px; color: #bdc1c6;
   font-size: 11px; border-bottom: 1px solid #3c4043; }
 .ok { color: #81c995; } .warn { color: #fdd663; } .plain { color: #e8eaed; }
-.cc { font: inherit; font-size: 10.5px; margin-left: 6px; padding: 0 7px; border-radius: 999px; cursor: pointer;
-  color: #8ab4f8; background: transparent; border: 1px solid #5f6368; line-height: 16px; }
-.cc:hover { background: rgba(138,180,248,.12); }
 .lang { font: inherit; font-size: 10.5px; margin-left: 6px; max-width: 130px; padding: 0 4px; border-radius: 6px; cursor: pointer;
   color: #e8eaed; background: #303134; border: 1px solid #5f6368; line-height: 16px; }
 .hint { flex-basis: 100%; color: #9aa0a6; }
@@ -419,7 +414,7 @@
       if (seen.tailCls !== tailCls) pTail.className = seen.tailCls = tailCls
       attr("data-latest", latest ? latest.text : "")
 
-      const stKey = JSON.stringify([m.status, m.captionToggle, m.languageHint])
+      const stKey = JSON.stringify([m.status, m.languageHint])
       // While the language menu is in use, leave the row alone: moving the menu would close it.
       const choosing = shadow.activeElement === langSel
       if (seen.st !== stKey && !choosing) {
@@ -430,21 +425,11 @@
         for (const r of m.status) {
           const item = el("span", null, st, `${r.label} `)
           el("span", r.level, item, r.value)
-          if (r.label === "Captions" && m.captionToggle) {
-            const hide = !m.captionToggle.hidden
-            const btn = el("button", "cc", item, hide ? "Hide on page" : "Show on page")
-            btn.type = "button"
-            btn.addEventListener("click", (e) => {
-              e.stopPropagation()
-              if (opts.onToggleCaptions) opts.onToggleCaptions(hide)
-            })
-          }
           if (r.label === "Captions") langSlot = item
         }
         if (m.languageHint) el("span", "hint", st, m.languageHint)
       }
       syncLanguage(m.language)
-      attr("data-cc", m.captionToggle ? (m.captionToggle.hidden ? "hidden" : "shown") : "")
       if (expanded) renderList(state)
       placeIfResized()
     }

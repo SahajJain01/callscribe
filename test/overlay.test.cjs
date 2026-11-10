@@ -221,18 +221,9 @@ test("renderRows puts markup in text literally", () => {
   assert.equal(list.children[0].speaker.textContent, "<b>x</b>:")
 })
 
-test("overlayModel: CC fallback offers a hide/show captions button that reflects the setting", () => {
-  const base = { startedAt: 0, source: "cc", platform: "google-meet", canHideCaptions: true }
-  assert.deepEqual(overlayModel({ ...base, captionsHidden: false }, 1000).captionToggle, { hidden: false })
-  assert.deepEqual(overlayModel({ ...base, captionsHidden: true }, 1000).captionToggle, { hidden: true })
-  assert.deepEqual(overlayModel({ ...base, platform: "slack-huddle", captionsHidden: false }, 1000).captionToggle, { hidden: false })
-})
-
-test("overlayModel: no captions button on the Meet feed, before captions, or where captions can't be hidden", () => {
-  const base = { startedAt: 0, platform: "google-meet", canHideCaptions: true, captionsHidden: false }
-  assert.equal(overlayModel({ ...base, source: "feed" }, 1000).captionToggle, null)
-  assert.equal(overlayModel({ ...base, source: "none" }, 1000).captionToggle, null)
-  assert.equal(overlayModel({ ...base, source: "cc", canHideCaptions: false }, 1000).captionToggle, null)
+test("CC fallback: the overlay offers no hide/show toggle for page captions", () => {
+  const m = overlayModel({ startedAt: 0, source: "cc", platform: "google-meet", canHideCaptions: true, captionsHidden: false }, 1000)
+  assert.equal(m.captionToggle, undefined)
 })
 
 test("overlayModel: orphaned after an update, the pill only carries the reload warning (runtime I1 / lifecycle F7)", () => {

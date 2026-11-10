@@ -22,7 +22,6 @@ FEATURES
 • Speaker names from Meet and Slack captions, with corrections merged so nothing is repeated
 • Pick the caption language for Meet right on the overlay (Tiếng Việt, 日本語, Español and more). It starts as your browser's language
 • Audio backup of everyone in the call, including you only while the call shows you're unmuted (never while you're muted, or when CallScribe can't tell)
-• Captions can stay hidden on screen and are still saved
 • Every stored call is listed in the popup with Transcript / Audio / Delete buttons
 • Saves as the call goes, so a crash or closed tab doesn't lose the call. After a crash the call is ended and saved on the next check (within a few minutes, or when Chrome starts again)
 • A call is removed from the browser 30 days after its files are saved to Downloads. Calls that weren't saved stay until you delete them
@@ -42,7 +41,7 @@ NOTES
 Save a transcript (from the platform's own live captions) and an audio backup of the user's Google Meet calls and Slack huddles to the user's computer.
 
 **Permission justifications:**
-- storage: Stores the user's settings (record audio, hide captions, etc.) and the overlay's position in extension storage.
+- storage: Stores the user's settings (record audio, caption language, etc.) and the overlay's position in extension storage.
 - unlimitedStorage: Each call (transcript and audio chunks) is kept in the browser's local database as it happens, so a crash doesn't lose it. A call is deleted 30 days after all its files are saved to Downloads; a call that wasn't saved stays until the user deletes it in the popup. An hour of audio is about 20 MB, which can exceed the default quota.
 - downloads: Saves the finished transcript (.md) and audio (.webm or .ogg) into the user's Downloads/CallScribe folder when a call ends or when the user clicks Transcript/Audio/Save again in the popup, and checks that each download completed.
 - offscreen: The service worker can't create blob URLs. An offscreen document assembles the stored audio chunks into one file so it can be downloaded.

@@ -205,19 +205,9 @@ for (let i = 0; i < 40; i++) {
     const shot = await send("Page.captureScreenshot", { format: "png" }, sessionId)
     fs.writeFileSync(path.join(work, "overlay.png"), Buffer.from(shot.result.data, "base64"))
     console.log("overlay screenshot:", path.join(work, "overlay.png"))
-    // CC mode: the card's Hide/Show button flips the "Hide captions on screen" setting in place.
-    const ccShown = () => evalPage(`document.querySelector('.p-huddle_closed_captions').getBoundingClientRect().right > 0`)
-    const hideSetting = () => swEval(`chrome.storage.local.get("settings").then((r) => r.settings.hideCaptions)`)
-    check((await overlayInfo())?.cc === "hidden" && !(await ccShown()), "CC mode: card offers the captions button; captions start hidden")
-    await clickShadow("cc")
-    await sleep(600)
-    check((await overlayInfo())?.cc === "shown" && (await ccShown()) && (await hideSetting()) === false,
-      "captions button shows the captions on the page and turns the setting off")
-    await clickShadow("cc")
-    await sleep(600)
-    check((await overlayInfo())?.cc === "hidden" && !(await ccShown()) && (await hideSetting()) === true,
-      "captions button hides them again and turns the setting back on")
-    check(await evalPage(`document.activeElement && document.activeElement.id === 'cs-focus-probe'`), "captions button keeps page focus")
+    // CC fallback: the caption box stays where the call app put it, with no hide/show button.
+    check((await overlayInfo())?.cc === null, "CC mode: no captions hide/show state on the overlay")
+    check(await evalPage(`document.querySelector('.p-huddle_closed_captions').getBoundingClientRect().right > 0`), "CC mode: captions stay visible on the page")
     // Collapse via the card header: the pill goes back to the saved spot (clamped to the right edge),
     // not to where the wider card had to be pushed.
     const hr = await hostRect()
@@ -231,7 +221,8 @@ for (let i = 0; i < 40; i++) {
     check((await storedPos()) === JSON.stringify(parkedPos), "collapsing does not overwrite the saved overlayPos")
   }
 }
-check(captionRight !== undefined && captionRight < 0, "caption box hidden off-screen (right edge " + captionRight + ")")
+check(captionRight !== undefined && captionRight > 0, "caption box left on screen (right edge " + captionRight + ")")
+check(!(await evalPage(`Boolean(document.getElementById("callscribe-hide-captions"))`)), "no caption-hiding style added to the page")
 check(overlayShown, "overlay shown during the call")
 check(overlayLatest, "overlay shows the latest caption")
 check(toggled, "overlay toggle ran during the call")

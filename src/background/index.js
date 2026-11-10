@@ -15,7 +15,7 @@ import * as db from "../shared/db.js"
 import { formatTranscript, fileBase } from "../shared/format.js"
 import * as L from "../shared/lifecycle.js"
 
-const DEFAULTS = { recordAudio: true, includeMic: true, autoCaptions: true, hideCaptions: true, showOverlay: true, autoDownload: true, folder: "CallScribe" }
+const DEFAULTS = { recordAudio: true, includeMic: true, autoCaptions: true, showOverlay: true, autoDownload: true, folder: "CallScribe" }
 const INSTANCE = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
 const PROBE_MS = 3000 // a tab that doesn't answer tab-status in this time counts as not answering
 const TAB_CLOSE_WAIT_MS = 7000 // let the tab's own session-end land first
