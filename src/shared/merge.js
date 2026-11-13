@@ -501,6 +501,8 @@
   }
   // A non-final utterance cut off by a stream restart is continued by the new stream within this long.
   const RESTART_CONTINUE_MS = 15000
+  // Copies of one utterance under two ids start this close together.
+  const TWIN_MS = 2000
 
   /**
    * Utterances from a structured caption stream (Meet's captions_v2 channel), where every update
@@ -516,6 +518,8 @@
       this.byKey = new Map()
       this.names = new Map()
       this.unnamed = new Map() // device -> number in first-seen order, for "Unknown speaker N"
+      this.versions = new Map() // key -> latest version seen under that key (copies share an entry)
+      this.twins = 0 // copies folded into an existing line (see _twin)
       this.dirty = false
     }
 
@@ -524,6 +528,21 @@
       const epoch = u.epoch || 0
       const key = `${epoch}|${u.device}|${u.id}`
       const e = this.byKey.get(key)
+      if (e && e.twin) {
+        // A line fed under two ids: each id keeps its own versions, and the lagging one may not
+        // shorten the line.
+        const last = this.versions.get(key) || 0
+        if (u.version < last) return
+        this.versions.set(key, u.version)
+        if (u.final) e.final = true
+        const a = ck(e.text), b = ck(text)
+        if (text && text !== e.text && !(b.length < a.length && commonPrefix(a, b) === b.length)) {
+          e.text = text
+          e.end = t
+          this.dirty = true
+        }
+        return
+      }
       if (e) {
         if (u.version < e.version) {
           // Ids restarted under us (a resubscription we didn't see): a much lower version with
@@ -555,6 +574,25 @@
         this.dirty = true
         return
       }
+      // The same utterance under a second id (seen live 2026-11-12, trigger unknown): fold it in.
+      const twin = this._twin(u.device, text, t)
+      if (twin) {
+        if (!twin.twin) {
+          twin.twin = true
+          for (const [k, x] of this.byKey) if (x === twin) this.versions.set(k, twin.version)
+        }
+        this.byKey.set(key, twin)
+        this.versions.set(key, u.version)
+        this.twins++
+        if (u.final) twin.final = true
+        const a = ck(twin.text), b = ck(text)
+        if (b.length > a.length) {
+          twin.text = text
+          twin.end = t
+          this.dirty = true
+        }
+        return
+      }
       if (!this.unnamed.has(u.device)) this.unnamed.set(u.device, this.unnamed.size + 1)
       const entry = { device: u.device, epoch, text, start: t, end: t, version: u.version, final: !!u.final }
       this.byKey.set(key, entry)
@@ -571,6 +609,21 @@
         if (e.epoch === epoch || e.final || t - e.end > RESTART_CONTINUE_MS) return undefined
         const a = ck(e.text), b = ck(text)
         return Math.min(a.length, b.length) >= 2 && (b.startsWith(a) || a.startsWith(b)) ? e : undefined
+      }
+      return undefined
+    }
+
+    // A live line by the same device that began within TWIN_MS, whose text starts the same way
+    // as this one (one holds the other's beginning): the same speech delivered twice.
+    _twin(device, text, t) {
+      const b = ck(text)
+      for (let i = this.entries.length - 1; i >= 0; i--) {
+        const e = this.entries[i]
+        if (t - e.start > TWIN_MS) return undefined
+        if (e.device !== device || e.final) continue
+        const a = ck(e.text)
+        const n = Math.min(a.length, b.length)
+        if (n >= 1 && commonPrefix(a, b) === n) return e
       }
       return undefined
     }
