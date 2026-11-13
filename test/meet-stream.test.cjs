@@ -156,3 +156,43 @@ test("M2: Meet asking for our language mid-switch ends the switch, even if our r
   msg("in", tagged(1, 1, "mixed-language line", "en-US", true))
   assert.deepEqual(got, ["mixed-language line"])
 })
+
+// Live 2026-11-12/13: Meet doesn't answer a request made while a subscription is already live, so
+// our "flowing" flag could stay off while captions arrived; every silence over 30 s then looked
+// like a dead feed and CC was forced on (the overlay flipped between Meet feed and CC).
+test("captions arriving confirm the feed even if our request was never answered", () => {
+  const realNow = Date.now
+  let now = realNow()
+  Date.now = () => now
+  try {
+    const sent = []
+    const st = meet.createCaptionStream({ toPage: (m) => sent.push(m), onUtterance: () => {}, onName: () => {}, language: () => "en-US" })
+    st.handle({ type: "dc-open", label: "captions_v2" })
+    st.start() // no reply ever comes
+    st.handle({ type: "dc-msg", label: "captions_v2", dir: "in", t: now, buf: tagged(1, 1, "Can you see it?", "en-US", true) })
+    const asked = sent.filter((m) => m.type === "dc-send").length
+    for (let i = 0; i < 8; i++) {
+      now += 5000 // 40 s of silence
+      st.tick()
+    }
+    assert.equal(st.active(), true)
+    assert.equal(sent.filter((m) => m.type === "dc-send").length, asked, "no re-requests while captions flow")
+  } finally {
+    Date.now = realNow
+  }
+})
+
+test("captions in another language don't confirm the feed while we switch", () => {
+  const realNow = Date.now
+  let now = realNow()
+  Date.now = () => now
+  try {
+    const { st, msg } = withLanguage("vi-VN")
+    msg("out", P.encodeLanguage(4, "en-US").buffer) // Meet's CC wants English; our vi-VN re-request is pending
+    msg("in", tagged(1, 1, "hello there", "en-US", true))
+    now += 40000
+    assert.equal(st.active(), false)
+  } finally {
+    Date.now = realNow
+  }
+})

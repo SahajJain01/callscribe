@@ -20,6 +20,8 @@ These were found or deferred during the November 2026 audit and fixes (0.3.0). N
 
 - **Feed lines delivered twice (seen live 2026-11-12, trigger unknown).** For two stretches of one call (35–44 and 55–64 min, with screen sharing and CC on), every caption-feed utterance arrived twice under two ids and was stored twice; the export then showed each phrase doubled ("X. X."). Since 0.3.3 a second copy from the same speaker that starts within 2 s of a live line with the same opening is folded into it (`UtteranceTracker.twins` counts them). Ruled out by live tests on 2026-11-13: CC turned on alone, a second language request on the caption channel, and presenting from this tab (it adds a connection with no caption channel). Not tested: someone else presenting (test guests are refused by Meet). Cost of the fold: a person who restarts a sentence with the same words within 2 s, before Meet finalises the first, keeps only the longer version.
 
+- **Feed/CC flip-flopping (fixed in 0.3.3).** Meet doesn't answer a caption request made while a subscription is already live, so the feed could keep flowing while CallScribe still waited for an answer; any silence over 30 s then looked like a dead feed and CC was forced on (seen on the 2026-11-12 call after 59 s and 53 s pauses). Captions arriving now count as the answer.
+
 - **Sleep or a frozen tab mid-call.**
   - When the tab wakes, the rest of the call is recorded as a second session.
   - A few seconds of audio are lost: everything from waking until the first write is refused.

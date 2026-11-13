@@ -161,6 +161,15 @@
               const lang = wanted()
               for (const u of d.utterances) {
                 if (switching && u.lang && !sameLang(u.lang, lang)) continue
+                // Captions we keep prove the stream is live, even if our request was never
+                // answered (Meet doesn't answer one made while a subscription is already live).
+                // Without this, every silence over 30 s looked like a dead feed and forced CC on.
+                if (!flowing && (!switching || (u.lang && sameLang(u.lang, lang)))) {
+                  flowing = true
+                  switching = false
+                  pending = 0
+                  tries = 0
+                }
                 onUtterance({ ...u, epoch }, m.t)
               }
             }
